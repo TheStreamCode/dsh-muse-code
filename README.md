@@ -30,16 +30,16 @@ a Muse Code subscription and adds a native device-code login flow.
 
 ## Install
 
-With the DSH plugin manager:
-
-```bash
-dsh plugin --profile desktop add @thestreamcode/dsh-muse-code
-```
-
-From the public repository:
+This plugin is distributed from GitHub; no npm package is required.
 
 ```bash
 dsh plugin --profile desktop add github:TheStreamCode/dsh-muse-code
+```
+
+From a local checkout:
+
+```bash
+dsh plugin --profile desktop add link:C:\path\to\dsh-muse-code
 ```
 
 The bundle inserts its route and auth plugin through `cordis.patch.yml`; no
