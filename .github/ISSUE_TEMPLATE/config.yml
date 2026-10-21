@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and workflows
+    url: https://github.com/TheStreamCode/dsh-muse-code/discussions
+    about: Ask usage questions and share workflows in GitHub Discussions
+  - name: Report a security vulnerability
+    url: https://github.com/TheStreamCode/dsh-muse-code/security/advisories/new
+    about: Send sensitive findings privately. Never include credentials in a public issue.

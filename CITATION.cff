@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "dsh-muse-code"
+version: 0.1.0
+date-released: "2026-10-21"
+url: "https://github.com/TheStreamCode/dsh-muse-code"
+repository-code: "https://github.com/TheStreamCode/dsh-muse-code"
+license: MIT
+abstract: >-
+  Unofficial DeepSeek Harness bundle that serves Meta Muse Code models through
+  a Muse Code subscription credential, with a native Meta device-code login
+  flow and the minted key stored in the DSH credential store.
+keywords:
+  - deepseek-harness
+  - dsh-plugin
+  - muse-code
+  - muse-spark
+  - meta-ai
+authors:
+  - family-names: Gasperini
+    given-names: Michael
+    affiliation: Mikesoft

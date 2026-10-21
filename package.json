@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "description": "Muse Code subscription model provider and credential login for DeepSeek Harness.",
   "license": "MIT",
-  "author": "TheStreamCode",
-  "homepage": "https://github.com/TheStreamCode/dsh-muse-code",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/TheStreamCode/dsh-muse-code.git"
+  "author": {
+    "name": "Michael Gasperini",
+    "url": "https://mikesoft.it"
   },
+  "homepage": "https://github.com/TheStreamCode/dsh-muse-code",
+  "repository": "github:TheStreamCode/dsh-muse-code",
   "bugs": {
     "url": "https://github.com/TheStreamCode/dsh-muse-code/issues"
   },
