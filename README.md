@@ -18,7 +18,13 @@ DSH credential store.
 
 ## Install
 
-This bundle is distributed from GitHub; no npm package is published.
+From the npm registry:
+
+```bash
+dsh plugin --profile desktop add @thestreamcode/dsh-muse-code
+```
+
+From the public GitHub repository:
 
 ```bash
 dsh plugin --profile desktop add github:TheStreamCode/dsh-muse-code
