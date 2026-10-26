@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import {
   apply,
+  CREDENTIAL_REFERENCE,
   createLoginRouteHandler,
   createSignInState,
   createStatusRouteHandler,
@@ -12,12 +13,16 @@ import {
   isChatModelId,
   inject,
   LOGIN_ROUTE,
+  mintInferenceKey,
+  mirrorCredentialReference,
   museLoginCommand,
   museModelEntry,
   name,
   prettifyModelName,
   readSignInNotice,
+  refreshCredentialRecord,
   STATUS_ROUTE,
+  syncCredentialState,
   syncMuseModels,
 } from "../lib/index.js"
 
@@ -158,17 +163,31 @@ test("plugin registers the command, both routes, the settings write, and credent
   )
 })
 
-test("route declaration merges the meta provider only when absent", async () => {
+test("route declaration wires the credential-dot reference", async () => {
   const absent = makeSettings([{ ns: "llm-pi-ai", revision: 7, value: { providers: { "opencode-go": { apiKeyEnv: "X" } } } }])
   assert.equal(await ensureMuseRoute(absent.settings, undefined, { attempts: 1 }), true)
   assert.equal(absent.updates.length, 1)
   assert.deepEqual(absent.updates[0].patch, {
-    providers: { meta: { displayName: "Muse Code (Meta subscription)" } },
+    providers: {
+      meta: { displayName: "Muse Code (Meta subscription)", apiKeyEnv: CREDENTIAL_REFERENCE },
+    },
   })
 
-  const declared = makeSettings([{ ns: "llm-pi-ai", revision: 1, value: { providers: { meta: { displayName: "kept" } } } }])
-  assert.equal(await ensureMuseRoute(declared.settings, undefined, { attempts: 1 }), false)
-  assert.equal(declared.updates.length, 0)
+  const declared = makeSettings([
+    { ns: "llm-pi-ai", revision: 1, value: { providers: { meta: { displayName: "kept" } } } },
+  ])
+  assert.equal(await ensureMuseRoute(declared.settings, undefined, { attempts: 1 }), true)
+  assert.deepEqual(declared.updates[0].patch, { providers: { meta: { apiKeyEnv: CREDENTIAL_REFERENCE } } })
+
+  const complete = makeSettings([
+    {
+      ns: "llm-pi-ai",
+      revision: 2,
+      value: { providers: { meta: { displayName: "kept", apiKeyEnv: CREDENTIAL_REFERENCE } } },
+    },
+  ])
+  assert.equal(await ensureMuseRoute(complete.settings, undefined, { attempts: 1 }), false)
+  assert.equal(complete.updates.length, 0)
 })
 
 test("seam notices and raw adapter notices both become instructions", () => {
@@ -388,6 +407,20 @@ test("the model sync leaves an existing models list alone and skips without a ke
   )
   assert.equal(withModels.updates.length, 0)
 
+  // The Settings form projects an absent array as []; that must not look like a
+  // user-owned catalog.
+  const projectedEmpty = makeContext({
+    settingsRows: [{ ns: "llm-pi-ai", revision: 1, value: { providers: { meta: { models: [] } } } }],
+  })
+  assert.equal(
+    await syncMuseModels(projectedEmpty.settings, undefined, {
+      credentials: () => makeCredentials(true, { access: "key" }),
+      fetchModelIds: async () => ["muse-wonder-1.0"],
+    }),
+    true,
+  )
+  assert.equal(projectedEmpty.updates.length, 1)
+
   const unsigned = makeContext()
   assert.equal(
     await syncMuseModels(unsigned.settings, undefined, {
@@ -412,3 +445,111 @@ test("fetchLiveModelIds parses the account catalog", async () => {
     globalThis.fetch = original
   }
 })
+
+function makeCredentialStore({ record, probe } = {}) {
+  const calls = { set: [], unset: [], modify: [] }
+  const store = {
+    record,
+    calls,
+    async describeRecord() {
+      return { configured: store.record !== undefined }
+    },
+    async readRecord() {
+      return store.record
+    },
+    async resolve() {
+      return probe
+    },
+    async set(ref, value) {
+      calls.set.push({ ref, value })
+    },
+    async unset(ref) {
+      calls.unset.push(ref)
+    },
+    async modifyRecord(key, update) {
+      calls.modify.push(key)
+      const next = await update(store.record)
+      if (next !== undefined) store.record = next
+      return next
+    },
+  }
+  return store
+}
+
+const OAUTH_RECORD = {
+  kind: "grant",
+  payload: { type: "oauth", access: "minted-key", refresh: "identity-token", expires: 0 },
+}
+
+test("the credential reference mirrors the record and clears when signed out", async () => {
+  const signedIn = makeCredentialStore({ record: { ...OAUTH_RECORD, payload: { ...OAUTH_RECORD.payload } } })
+  assert.equal(await mirrorCredentialReference(signedIn), true)
+  assert.deepEqual(signedIn.calls.set, [{ ref: CREDENTIAL_REFERENCE, value: "minted-key" }])
+
+  const unchanged = makeCredentialStore({ record: OAUTH_RECORD, probe: { value: "minted-key", source: "store" } })
+  assert.equal(await mirrorCredentialReference(unchanged), true)
+  assert.equal(unchanged.calls.set.length, 0)
+
+  const signedOut = makeCredentialStore({})
+  assert.equal(await mirrorCredentialReference(signedOut), false)
+  assert.deepEqual(signedOut.calls.unset, [CREDENTIAL_REFERENCE])
+})
+
+test("a near-expiry record is re-minted and stored back without touching the identity token", async () => {
+  const now = 1_000_000
+  const store = makeCredentialStore({
+    record: { kind: "grant", payload: { type: "oauth", access: "old-key", refresh: "identity-token", expires: now + 60_000 } },
+  })
+  const requests = []
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, authorization: init.headers.Authorization, version: init.headers["x-api-version"] })
+    return new Response(JSON.stringify({ api_key: "fresh-key" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  }
+  assert.equal(await refreshCredentialRecord(store, { now: () => now, fetchImpl }), true)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].url, "https://api.meta.ai/muse-code/key")
+  assert.equal(requests[0].authorization, "Bearer identity-token")
+  assert.equal(requests[0].version, "1.0.0")
+  assert.equal(store.record.payload.access, "fresh-key")
+  assert.equal(store.record.payload.refresh, "identity-token")
+  assert.equal(store.record.payload.expires, now + 24 * 60 * 60 * 1000)
+})
+
+test("a record far from expiry is left alone", async () => {
+  const now = 1_000_000
+  const store = makeCredentialStore({
+    record: { kind: "grant", payload: { type: "oauth", access: "key", refresh: "identity", expires: now + 7 * 60 * 60 * 1000 } },
+  })
+  let fetched = 0
+  const fetchImpl = async () => {
+    fetched += 1
+    return new Response("{}", { status: 200 })
+  }
+  assert.equal(await refreshCredentialRecord(store, { now: () => now, fetchImpl }), false)
+  assert.equal(fetched, 0)
+})
+
+test("syncCredentialState refreshes and mirrors in one pass", async () => {
+  const now = 1_000_000
+  const store = makeCredentialStore({
+    record: { kind: "grant", payload: { type: "oauth", access: "old", refresh: "identity", expires: now - 1 } },
+  })
+  const fetchImpl = async () =>
+    new Response(JSON.stringify({ api_key: "fresh" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  const result = await syncCredentialState(store, { now: () => now, fetchImpl })
+  assert.deepEqual(result, { refreshed: true, mirrored: true })
+  assert.equal(store.calls.modify.length, 1)
+  assert.deepEqual(store.calls.set, [{ ref: CREDENTIAL_REFERENCE, value: "fresh" }])
+})
+
+test("mintInferenceKey rejects a failed mint", async () => {
+  const fetchImpl = async () => new Response("{}", { status: 401 })
+  assert.equal(await mintInferenceKey("identity", fetchImpl), undefined)
+})
+
