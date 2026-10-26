@@ -147,7 +147,9 @@ The Meta Model API caches the request prefix per `prompt_cache_key`, and a reque
 key gets no reuse at all. DSH's pi-ai adapter sends the session id as the key for every call, so
 turns in the same session reuse the prefix Meta already saw. Measured against the live API with
 an identical 1.6k-token prefix: same key → 1521 of 1600 tokens cached on the second call;
-different key or no key → 0.
+different key or no key → 0. After a 12-minute pause the same-key entries still reported 2673 of
+2800 cached tokens, with or without `prompt_cache_retention`, and a fresh key still reported 0 —
+so the default retention is enough for normal turn pacing and there is no retention knob to tune.
 
 The ratio you see in the usage panel therefore depends on how the session is used:
 
@@ -234,12 +236,13 @@ Both are DSH's generic provider-row actions and a plugin cannot hide them.
 - **Edit** writes the route profile into your profile patch: display name, models, and the
   `apiKeyEnv` reference. The plugin restores the reference on the next boot and refills an
   emptied model list from the account catalog.
-- **Delete** removes only that user-layer route: the provider leaves Settings → Models and the
-  model picker, and a hand-edited model list is lost; the credential record and its mirrored
-  reference stay. The plugin re-declares the route on the next boot and resyncs the catalog. To
-  actually remove Muse Code, uninstall the bundle and delete the credential record.
-
-The supported off switch is the plugin itself:
+- **Delete** removes the user-layer route and the plugin treats that removal as a sign-out: it
+  deletes the `llm-pi-ai/meta` OAuth record and clears the mirrored `MUSE_CODE_SUB_TOKEN`
+  reference. The provider leaves Settings → Models and the picker, and a hand-edited model list
+  is lost; the plugin re-declares the row on its next refresh (and on restart) with a red dot, so
+  sign in again to keep using Muse Code.
+- To remove Muse Code for good, uninstall the bundle and delete the credential record; the
+  supported off switch is the plugin itself:
 
 ```bash
 dsh plugin --profile desktop remove @thestreamcode/dsh-muse-code
