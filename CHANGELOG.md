@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-26
+
+### Added
+
+- Live model catalog sync: the plugin reads the account's chat catalog
+  (`GET https://api.meta.ai/v1/models`) with the stored subscription key and declares it on the
+  route, so Muse Wonder and future chat models appear in the picker. Non-chat families
+  (`muse-image-*`, `muse-voice-*`, `sam-*`) are filtered; the Muse Spark rows keep the shipped
+  catalog fidelity; a model list edited by the user is never overwritten.
+- Live sign-in status: an exact `GET /muse-code/status` route reports `pending`, `authorized`,
+  `failed`, or `idle`.
+- The Settings > Models card was rebuilt as a proper panel: title, coloured status dot
+  (**Signed in**, **Waiting for Meta…**, **Sign-in failed**), the device code as a monospace
+  badge, and separate primary/secondary actions. The card polls the status route and flips to
+  **Signed in** without a reload.
+
+### Fixed
+
+- `/muse-login` no longer leaves the chat on "sign-in started": after opening the browser it waits
+  for Meta's confirmation (bounded) and answers with the final state or the failure reason.
+
 ## [0.2.0] - 2026-10-26
 
 ### Changed

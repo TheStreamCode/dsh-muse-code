@@ -47,43 +47,52 @@ bundle.
 ## Quick start
 
 1. Install the bundle and restart DSH.
-2. Open **Settings → Models** and find **Muse Code (Meta subscription)**. Its models are the
-   ones DSH's Meta catalog advertises: Muse Spark 1.1, 1.2, and 1.3, plus their `-contributor`
-   variants.
-3. Press **Sign in** in the Muse Code area of that page. The Host starts DSH's Meta device-code
-   flow, opens the verification page in your default browser, and shows the code to confirm.
-   Without the page (CLI or a page that cannot reach the Host), run `/muse-login` in any chat and
-   follow the printed URL and code instead.
-4. Confirm the code on Meta's page and approve the login. DSH stores the credential and keeps it
-   fresh; the Muse Code models are selectable as soon as Meta confirms.
+2. Open **Settings → Models**: the **Muse Code (Meta subscription)** card shows the subscription
+   status and the models the account catalog serves — Muse Spark 1.1/1.2/1.3 (+ `-contributor`)
+   and the Muse Wonder family, plus any future chat model the account lists.
+3. Press **Sign in** on that card. The Host starts DSH's Meta device-code flow, opens the
+   verification page in your default browser, and shows the code. The card follows the attempt
+   and switches to **Signed in** when Meta confirms. Without the page (CLI, or a page that cannot
+   reach the Host), run `/muse-login` in a chat instead.
+4. Confirm the code on Meta's page and approve. DSH stores the credential and keeps it fresh;
+   `/muse-login` answers with the final state ("Muse Code is signed in") once Meta confirms.
 5. Pick a Muse model in the model picker, for example `Muse Spark 1.3`.
 
 The credential lives in the DSH credential store as the `llm-pi-ai/meta` record. It is never
-written to `cordis.patch.yml`, which carries only the route's display name.
+written to `cordis.patch.yml`, which carries only the route's display name and its model list.
 
 ## Where the sign-in lives
 
 DSH 0.2.1 exposes no generic Remote method for starting a provider OAuth flow, so the Settings
-page cannot call the authorization seam directly. The bundle therefore registers an exact local
-Web route (`POST /muse-code/login`) on the Host's own HTTP server; the **Sign in** control under
-Settings → Models calls it, and the Host both opens the verification page and answers with the
-code and the instructions. The same flow is available as the `/muse-login` command for the
-composer, CLI surfaces, or a page whose origin cannot reach the Host.
+page cannot call the authorization seam directly. The bundle therefore registers exact local Web
+routes on the Host's own HTTP server:
+
+- `POST /muse-code/login` starts the sign-in and answers with the code and the Meta URL;
+- `GET /muse-code/status` reports `pending`, `authorized`, `failed`, or `idle`, which is what lets
+  the card flip to **Signed in** without a reload.
+
+The `/muse-login` command runs the same flow and waits for Meta's confirmation before answering,
+so the chat shows the final state instead of leaving the prompt waiting. A page whose origin
+cannot reach the Host falls back to that command.
 
 ## Features
 
 - Declares the shipped `meta` provider route in the `llm-pi-ai` settings section, labeled
   **Muse Code (Meta subscription)**, so Settings → Models and the model picker show it. An
-  existing `meta` profile is left untouched.
-- Adds a **Sign in** control under Settings → Models, backed by the local
-  `POST /muse-code/login` route, and the `/muse-login` chat command. Both start DSH's own
-  device-code flow (`llm-pi-ai/meta`), open the verification page in the default browser, and
-  return the code so the surface can show it.
+  existing `meta` profile without a model list is left untouched apart from that list.
+- Syncs the account's live chat catalog (`GET https://api.meta.ai/v1/models`, authenticated with
+  the stored subscription key) into the route, so the Muse Wonder family and future chat models
+  are selectable without waiting for a DSH catalog update. Non-chat families (`muse-image-*`,
+  `muse-voice-*`, `sam-*`) are filtered out; the five Muse Spark rows keep the shipped catalog's
+  names, context window, output cap, and reasoning levels. A model list you edited yourself is
+  never overwritten.
+- Adds a **Sign in** card under Settings → Models with the live status, the device code, and a
+  direct Meta page link, backed by the routes above, plus the `/muse-login` chat command. Both
+  start DSH's own device-code flow (`llm-pi-ai/meta`) and open the verification page in the
+  default browser.
 - Leaves credential handling to DSH: the shipped flow stores the sign-in as an OAuth credential
   record and re-mints Meta's short-lived inference key automatically, so the route keeps
   working after the key rotates.
-- Serves the models DSH advertises for the Meta provider, with text and image input, a
-  1,048,576-token context window, and the reasoning levels each model supports.
 
 ## Requirements
 
@@ -98,22 +107,25 @@ composer, CLI surfaces, or a page whose origin cannot reach the Host.
 | Setting | Purpose | Default |
 | --- | --- | --- |
 | `meta` provider route | Declared by the bundle in the `llm-pi-ai` settings section; shown under Settings → Models and in the model picker. | declared on first boot |
-| **Sign in** control | Starts the shipped Meta device-code flow from Settings → Models, opens the browser, and shows the code. Backed by `POST /muse-code/login` on the local Host. | available after install |
-| `/muse-login` | The same sign-in from a chat or CLI surface, printing the URL and code. | available after install |
+| **Sign in** card | Starts the shipped Meta device-code flow, opens the browser, shows the code, and follows the live status until **Signed in**. Backed by `POST /muse-code/login` and `GET /muse-code/status` on the local Host. | available after install |
+| `/muse-login` | The same sign-in from a chat or CLI surface; waits for Meta's confirmation and reports the final state. | available after install |
+| Live model catalog | Chat models the account serves (`GET /v1/models`), written into the declared route when it has no model list of its own. | synced after sign-in |
 | `META_API_KEY` | Optional Meta Model API key that DSH's Meta provider accepts instead of the subscription sign-in. | unset |
-| Model | Any model the Meta provider advertises; availability depends on the subscription plan. | `muse-spark-1.3` |
+| Model | Any model the route serves; availability depends on the subscription plan. | `muse-spark-1.3` |
 
 The `MUSE_CODE_SUB_TOKEN` reference from the 0.1.x releases is no longer used by this bundle;
 see the upgrade note under Troubleshooting.
 
 ## Privacy and security
 
-- The bundle itself calls no endpoint and stores no secret. The sign-in, the credential record,
-  and the inference requests belong to DSH: requests go to `https://api.meta.ai/v1`, and the
-  verification page is opened on `https://auth.meta.com`.
-- The local `POST /muse-code/login` route only starts that flow and answers with the verification
-  URL and the one-time code; it transmits no credential and is reachable only on the Host's own
-  loopback listener.
+- The bundle talks to one endpoint: `GET https://api.meta.ai/v1/models`, authenticated with the
+  stored subscription key, to sync the account's chat catalog into the route. It stores no
+  secret, and the sign-in, the credential record, and the inference requests belong to DSH:
+  requests go to `https://api.meta.ai/v1`, and the verification page is opened on
+  `https://auth.meta.com`.
+- The local `POST /muse-code/login`, `GET /muse-code/login`, and `GET /muse-code/status` routes
+  only start the flow and report its state; they transmit no credential and are reachable only
+  on the Host's own loopback listener.
 - The stored credential is the `llm-pi-ai/meta` record in the DSH credential store. It never
   appears in configuration or logs.
 - To remove access, remove the bundle, remove the declared provider from **Settings → Models**
@@ -153,8 +165,21 @@ flow.
 
 ### The browser did not open
 
-The Host opens it best-effort through the platform's URI handler. Both the control and the
-command print the verification URL and the code, so open the URL manually and enter the code.
+The Host opens it best-effort through the platform's URI handler. The card and the command show
+the code and the sign-in page link, so open the page manually and enter the code.
+
+### The Muse Code card stays on "Waiting for Meta…"
+
+Meta has not confirmed the code yet, or the page could not reach the Host's status route. Approve
+the code on Meta's page; if the card never changes, use `/muse-login` in a chat, which waits for
+the confirmation itself.
+
+### Muse Wonder (or another catalog model) is missing
+
+The live catalog sync only fills a route that has no model list of its own. If you edited the
+provider's models under **Settings → Models → Edit**, remove that list (or reset it) and restart
+DSH so the sync can refill it from the account catalog. The sync also needs the stored credential:
+sign in again first if the card is not **Signed in**.
 
 ### Meta denies the login, or the subscription is inactive
 
