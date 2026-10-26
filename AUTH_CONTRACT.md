@@ -1,7 +1,9 @@
 # Muse auth contract (v1)
 
-This bundle implements the same Meta device-code flow as the other Muse Code
-plugins. Change this file and the pinned constants/tests together:
+DeepSeek Harness implements this Meta device-code contract in its shipped pi-ai Meta
+provider (`llm-pi-ai/meta`); this bundle relies on that implementation. The sibling Muse Code
+plugins implement the same flow themselves, so change this file and the pinned values together
+with:
 
 - `opencode-muse-auth`
 - `hermes-muse-code`
@@ -20,6 +22,10 @@ plugins. Change this file and the pinned constants/tests together:
 | Credential reference | `MUSE_CODE_SUB_TOKEN` |
 | Inference base URL | `https://api.meta.ai/v1` |
 
+DeepSeek Harness stores the same sign-in as the OAuth credential record `llm-pi-ai/meta` and
+re-mints its short-lived key, because the pi-ai adapter owns that flow. The pinned
+`MUSE_CODE_SUB_TOKEN` reference describes the sibling plugins' credential, not DSH's.
+
 ## Behaviour
 
 - Device flow: request a device code, poll the token endpoint, accept
@@ -27,7 +33,8 @@ plugins. Change this file and the pinned constants/tests together:
   terminal error or at `expires_in`.
 - Key mint: exchange the OAuth access token for the account-bound inference
   key; reject an inactive subscription or a pending payment.
-- Persistence: the key is stored through the DSH credential seam under
-  `MUSE_CODE_SUB_TOKEN`; the OAuth access token stays in memory.
-- Any change to this contract bumps `AUTH_CONTRACT_VERSION` in the code and
+- Persistence: the sibling plugins store the key through the DSH credential seam under
+  `MUSE_CODE_SUB_TOKEN` and keep the OAuth access token in memory. DeepSeek Harness stores the
+  sign-in as the `llm-pi-ai/meta` credential record and renews the key from it.
+- Any change to this contract bumps the version constant in the implementations' code and
   requires updating the pinned tests in all four repositories.

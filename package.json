@@ -1,7 +1,7 @@
 {
   "name": "@thestreamcode/dsh-muse-code",
-  "version": "0.1.1",
-  "description": "Muse Code subscription model provider and credential login for DeepSeek Harness.",
+  "version": "0.2.0",
+  "description": "Unofficial DeepSeek Harness integration for Meta's Muse Code subscription: declares the shipped Meta provider route and adds its sign-in command. Use at your own risk.",
   "license": "MIT",
   "author": {
     "name": "Michael Gasperini",
@@ -16,10 +16,14 @@
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./package.json": "./package.json"
+    "./client": "./client/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib",
+    "client/client.js",
+    "locale/*.json",
     "cordis.patch.yml",
     "README.md",
     "DISCLAIMER.md",
@@ -29,6 +33,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ]
     }
   },
   "engines": {
