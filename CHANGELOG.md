@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-10-26
+
+### Added
+
+- Measured the Meta prompt-cache window: same-key entries still hit after 12 minutes (2673 of
+  2800 tokens), a fresh key reports 0, and `prompt_cache_retention: 24h` made no difference in
+  that window — so there is no retention knob worth exposing.
+
+### Changed
+
+- **Delete on the Muse Code row now signs out.** The Models page's Delete only unsets the
+  user-layer route; the plugin treats that removal as a sign-out and deletes the
+  `llm-pi-ai/meta` OAuth record together with the mirrored `MUSE_CODE_SUB_TOKEN` reference,
+  instead of leaving a green dot behind for a row that no longer exists. The row is re-declared
+  (red dot) on the next refresh or restart.
+
 ## [0.2.2] - 2026-10-26
 
 ### Added

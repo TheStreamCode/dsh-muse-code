@@ -99,6 +99,7 @@ type CredentialsFace = {
     } | undefined>;
     set?(reference: string, value: string): Promise<void>;
     unset?(reference: string): Promise<void>;
+    deleteRecord?(key: string): Promise<void>;
     modifyRecord?(key: string, update: (current: CredentialRecord | undefined) => Promise<CredentialRecord | undefined>): Promise<unknown>;
 };
 type WebRoute = {
@@ -275,6 +276,15 @@ export declare function prettifyModelName(id: string): string;
  * @returns the chat model ids, or null on any failure.
  */
 export declare function fetchLiveModelIds(accessKey: string, timeoutMs?: number): Promise<string[] | null>;
+/**
+ * Sign out of Muse Code: drop the OAuth record and the route's mirrored
+ * credential reference. The Models page's **Delete** action only unsets the
+ * user-layer route, so the plugin treats that removal as a sign-out rather
+ * than leaving credentials behind for a row that no longer exists.
+ * @param credentials - the credential seam.
+ * @param logger - optional plugin logger.
+ */
+export declare function logoutMuseCode(credentials: CredentialsFace, logger?: Logger): Promise<void>;
 /** Injected side effects for the credential bridge, overridable in tests. */
 export type CredentialSyncOptions = {
     logger?: Logger;

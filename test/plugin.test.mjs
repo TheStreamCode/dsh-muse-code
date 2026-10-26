@@ -13,6 +13,7 @@ import {
   isChatModelId,
   inject,
   LOGIN_ROUTE,
+  logoutMuseCode,
   mintInferenceKey,
   mirrorCredentialReference,
   museLoginCommand,
@@ -56,12 +57,23 @@ function makeSettings(rows) {
 }
 
 function makeCredentials(configured = false, payload = undefined) {
+  const calls = { deleted: [], unset: [], set: [] }
   return {
+    calls,
     async describeRecord() {
       return { configured }
     },
     async readRecord() {
       return configured ? { kind: "grant", payload } : undefined
+    },
+    async deleteRecord(key) {
+      calls.deleted.push(key)
+    },
+    async unset(reference) {
+      calls.unset.push(reference)
+    },
+    async set(reference, value) {
+      calls.set.push({ reference, value })
     },
   }
 }
@@ -69,14 +81,15 @@ function makeCredentials(configured = false, payload = undefined) {
 function makeContext(options = {}) {
   const flow = "flow" in options ? options.flow : FLOW
   const credentials = options.credentials ?? makeCredentials(false)
-  const settingsRows = options.settingsRows ?? [
+  const rows = options.settingsRows ?? [
     { ns: "llm-pi-ai", revision: 3, value: { providers: { meta: { displayName: "Muse Code (Meta subscription)" } } } },
   ]
   const commands = []
   const children = []
   const routes = []
   const cancels = []
-  const { settings, updates } = makeSettings(settingsRows)
+  const listeners = {}
+  const { settings, updates } = makeSettings(rows)
   const ctx = {
     credentials,
     authorization: {
@@ -107,11 +120,12 @@ function makeContext(options = {}) {
       callback({ ...ctx, settings, credentials, webServer: { register(route) { routes.push(route); return () => {} } } })
       return () => {}
     },
-    on() {
+    on(event, listener) {
+      ;(listeners[event] ??= []).push(listener)
       return () => {}
     },
   }
-  return { ctx, commands, children, routes, cancels, updates, settings, credentials }
+  return { ctx, commands, children, routes, cancels, updates, settings, credentials, rows, listeners }
 }
 
 function makeResponse() {
@@ -552,4 +566,38 @@ test("mintInferenceKey rejects a failed mint", async () => {
   const fetchImpl = async () => new Response("{}", { status: 401 })
   assert.equal(await mintInferenceKey("identity", fetchImpl), undefined)
 })
+
+test("logoutMuseCode drops the record and its mirrored reference", async () => {
+  const credentials = makeCredentials(true, { access: "key", refresh: "identity", expires: Date.now() + 1e6 })
+  await logoutMuseCode(credentials)
+  assert.deepEqual(credentials.calls.deleted, ["llm-pi-ai/meta"])
+  assert.deepEqual(credentials.calls.unset, [CREDENTIAL_REFERENCE])
+})
+
+test("deleting the route in Settings signs out the subscription", async () => {
+  // No record: the boot refresh must not reach the network for this test.
+  const credentials = makeCredentials(false)
+  const context = makeContext({ credentials })
+  apply(context.ctx)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  context.rows.splice(0, context.rows.length, { ns: "llm-pi-ai", revision: 9, value: { providers: {} } })
+  for (const listener of context.listeners["settings/document-updated"] ?? []) listener("llm-pi-ai")
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  assert.deepEqual(credentials.calls.deleted, ["llm-pi-ai/meta"])
+  assert.ok(credentials.calls.unset.includes(CREDENTIAL_REFERENCE))
+})
+
+test("a settings update without a previously declared route does not sign out", async () => {
+  const credentials = makeCredentials(false)
+  const context = makeContext({
+    credentials,
+    settingsRows: [{ ns: "llm-pi-ai", revision: 1, value: { providers: {} } }],
+  })
+  apply(context.ctx)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  for (const listener of context.listeners["settings/document-updated"] ?? []) listener("llm-pi-ai")
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  assert.deepEqual(credentials.calls.deleted, [])
+})
+
 
