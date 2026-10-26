@@ -90,8 +90,11 @@ cannot reach the Host falls back to that command.
   direct Meta page link, backed by the routes above, plus the `/muse-login` chat command. Both
   start DSH's own device-code flow (`llm-pi-ai/meta`) and open the verification page in the
   default browser.
+- Paints the native credential dot on the **Muse Code (Meta subscription)** row: the route names
+  `apiKeyEnv: MUSE_CODE_SUB_TOKEN`, and the plugin mirrors the OAuth record's minted key into that
+  reference (red without a credential, green with one) and re-mints it before Meta's ~24 h expiry.
 - Leaves credential handling to DSH: the shipped flow stores the sign-in as an OAuth credential
-  record and re-mints Meta's short-lived inference key automatically, so the route keeps
+  record and the plugin keeps the route's credential-reference copy fresh, so the route keeps
   working after the key rotates.
 
 ## Requirements
@@ -126,8 +129,9 @@ see the upgrade note under Troubleshooting.
 - The local `POST /muse-code/login`, `GET /muse-code/login`, and `GET /muse-code/status` routes
   only start the flow and report its state; they transmit no credential and are reachable only
   on the Host's own loopback listener.
-- The stored credential is the `llm-pi-ai/meta` record in the DSH credential store. It never
-  appears in configuration or logs.
+- The stored credential is the `llm-pi-ai/meta` record in the DSH credential store; the
+  `MUSE_CODE_SUB_TOKEN` reference the row reads is a copy of its minted key and is refreshed by
+  the plugin. Neither ever appears in configuration or logs.
 - To remove access, remove the bundle, remove the declared provider from **Settings → Models**
   (or from the profile's `cordis.patch.yml`), and delete the `llm-pi-ai/meta` record while DSH
   is stopped (the file is `$DSH_HOME/.credentials.yaml`), or run the sign-in again to replace
@@ -136,6 +140,25 @@ see the upgrade note under Troubleshooting.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and
 [AUTH_CONTRACT.md](AUTH_CONTRACT.md) for the pinned login contract that DSH implements.
+
+## Prompt caching
+
+The Meta Model API caches the request prefix per `prompt_cache_key`, and a request without that
+key gets no reuse at all. DSH's pi-ai adapter sends the session id as the key for every call, so
+turns in the same session reuse the prefix Meta already saw. Measured against the live API with
+an identical 1.6k-token prefix: same key → 1521 of 1600 tokens cached on the second call;
+different key or no key → 0.
+
+The ratio you see in the usage panel therefore depends on how the session is used:
+
+- the cache is per key and per model — switching model or route starts a fresh prefix;
+- a short session, or turns spaced far apart, shows a low ratio, because the first call of every
+  cache window pays full price;
+- editing the system prompt or compacting the history invalidates the prefix once.
+
+The plugin does not change the request shape, so this behaves like any other pi-ai route in the
+same harness (for example `opencode-go`). DeepSeek's first-party routes report their own cache
+counters and are not directly comparable.
 
 ## Troubleshooting
 
@@ -191,6 +214,36 @@ before it expires.
 
 DSH re-mints the inference key from the stored session. When Meta ends that session, run the
 sign-in again (Sign in control or `/muse-login`) to sign in and replace the record.
+
+### The credential dot stays red after signing in
+
+The route's credential reference is a copy of the record's minted key; the plugin mirrors it on
+boot and on every record update. If the dot stays red while the card says **Signed in**, restart
+DSH and check that the `llm-pi-ai/meta` record still exists in the credential store.
+
+### Requests fail after about a day without the plugin running
+
+The route authenticates through the mirrored reference, and the plugin re-mints the key before
+its ~24 h expiry. If DSH ran with the plugin disabled long enough for the key to lapse, sign in
+again (Sign in card or `/muse-login`).
+
+### Edit and Delete on the Muse Code row
+
+Both are DSH's generic provider-row actions and a plugin cannot hide them.
+
+- **Edit** writes the route profile into your profile patch: display name, models, and the
+  `apiKeyEnv` reference. The plugin restores the reference on the next boot and refills an
+  emptied model list from the account catalog.
+- **Delete** removes only that user-layer route: the provider leaves Settings → Models and the
+  model picker, and a hand-edited model list is lost; the credential record and its mirrored
+  reference stay. The plugin re-declares the route on the next boot and resyncs the catalog. To
+  actually remove Muse Code, uninstall the bundle and delete the credential record.
+
+The supported off switch is the plugin itself:
+
+```bash
+dsh plugin --profile desktop remove @thestreamcode/dsh-muse-code
+```
 
 ### Upgrading from 0.1.x
 

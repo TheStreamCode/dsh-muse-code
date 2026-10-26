@@ -1,6 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 export declare const name = "dsh-muse-code";
 export declare const inject: string[];
+/**
+ * Credential reference the route reads through `apiKeyEnv`.
+ *
+ * DSH paints the Models row's credential dot only for a route that names a
+ * reference, so the route reads the minted inference key through this reference
+ * and the plugin keeps it in step with the OAuth record.
+ */
+export declare const CREDENTIAL_REFERENCE = "MUSE_CODE_SUB_TOKEN";
 /** Web route the Settings control calls to start the sign-in. */
 export declare const LOGIN_ROUTE = "/muse-code/login";
 /** Web route that reports whether the sign-in completed. */
@@ -84,6 +92,14 @@ type CredentialsFace = {
     describeRecord(key: string): Promise<{
         configured: boolean;
     }>;
+    /** Stored reference state, used to avoid rewriting an unchanged key. */
+    resolve?(reference: string): Promise<{
+        value?: string;
+        source?: string;
+    } | undefined>;
+    set?(reference: string, value: string): Promise<void>;
+    unset?(reference: string): Promise<void>;
+    modifyRecord?(key: string, update: (current: CredentialRecord | undefined) => Promise<CredentialRecord | undefined>): Promise<unknown>;
 };
 type WebRoute = {
     kind: "exact" | "prefix";
@@ -259,6 +275,56 @@ export declare function prettifyModelName(id: string): string;
  * @returns the chat model ids, or null on any failure.
  */
 export declare function fetchLiveModelIds(accessKey: string, timeoutMs?: number): Promise<string[] | null>;
+/** Injected side effects for the credential bridge, overridable in tests. */
+export type CredentialSyncOptions = {
+    logger?: Logger;
+    fetchImpl?: typeof fetch;
+    now?: () => number;
+    refreshWindowMs?: number;
+};
+/**
+ * Keep the route's credential reference equal to the OAuth record's minted key
+ * and re-mint that key before it expires.
+ *
+ * The route names `apiKeyEnv: MUSE_CODE_SUB_TOKEN` so DSH paints its credential
+ * dot; an explicit reference is also the highest-priority auth override, which
+ * means the plugin must keep it fresh itself. The OAuth record stays the source
+ * of truth (the shipped flow wrote it, and it carries the non-renewable identity
+ * token), so this only mirrors its `access` field and rotates it ahead of
+ * expiry through the pinned key-mint endpoint.
+ *
+ * @param credentials - the credential seam.
+ * @param options - injected side effects, overridable in tests.
+ * @returns which steps ran.
+ */
+export declare function syncCredentialState(credentials: CredentialsFace, options?: CredentialSyncOptions): Promise<{
+    refreshed: boolean;
+    mirrored: boolean;
+}>;
+/**
+ * Copy the record's minted inference key into the route's credential reference,
+ * or clear the reference when the record is gone (the row then shows red).
+ * @param credentials - the credential seam.
+ * @param options - injected side effects.
+ * @returns whether the stored reference now carries a key.
+ */
+export declare function mirrorCredentialReference(credentials: CredentialsFace, options?: CredentialSyncOptions): Promise<boolean>;
+/**
+ * Re-mint the inference key from the record's identity token when the current
+ * key is close to expiry, and store it back into the record.
+ * @param credentials - the credential seam.
+ * @param options - injected side effects.
+ * @returns whether a fresh key was minted and stored.
+ */
+export declare function refreshCredentialRecord(credentials: CredentialsFace, options?: CredentialSyncOptions): Promise<boolean>;
+/**
+ * Exchange the non-renewable Meta identity token for a fresh inference key.
+ * @param identityToken - the record's `refresh` field.
+ * @param fetchImpl - injectable fetch.
+ * @param timeoutMs - request bound.
+ * @returns the minted key, or undefined on any failure.
+ */
+export declare function mintInferenceKey(identityToken: string, fetchImpl?: typeof fetch, timeoutMs?: number): Promise<string | undefined>;
 /**
  * The page a plain navigation to {@link LOGIN_ROUTE} receives: the code, a link
  * to Meta, and a poll of {@link STATUS_ROUTE} until the sign-in completes.

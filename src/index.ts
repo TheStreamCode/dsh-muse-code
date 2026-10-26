@@ -39,6 +39,22 @@ const AUTH_KEY = "llm-pi-ai/meta"
 const AUTH_METHOD = "oauth"
 /** Display name for the route this bundle declares. */
 const ROUTE_LABEL = "Muse Code (Meta subscription)"
+/**
+ * Credential reference the route reads through `apiKeyEnv`.
+ *
+ * DSH paints the Models row's credential dot only for a route that names a
+ * reference, so the route reads the minted inference key through this reference
+ * and the plugin keeps it in step with the OAuth record.
+ */
+export const CREDENTIAL_REFERENCE = "MUSE_CODE_SUB_TOKEN"
+/** Key-mint endpoint of the pinned Muse contract. */
+const KEY_MINT_URL = "https://api.meta.ai/muse-code/key"
+/** Meta's minted inference keys live about a day. */
+const KEY_LIFETIME_MS = 24 * 60 * 60 * 1000
+/** Re-mint the key once the record is this close to expiry. */
+const REFRESH_WINDOW_MS = 6 * 60 * 60 * 1000
+/** How often the plugin re-checks the record while it runs. */
+const REFRESH_CHECK_MS = 15 * 60 * 1000
 /** Web route the Settings control calls to start the sign-in. */
 export const LOGIN_ROUTE = "/muse-code/login"
 /** Web route that reports whether the sign-in completed. */
@@ -140,6 +156,14 @@ type CredentialRecord = {
 type CredentialsFace = {
   readRecord(key: string): Promise<CredentialRecord | undefined>
   describeRecord(key: string): Promise<{ configured: boolean }>
+  /** Stored reference state, used to avoid rewriting an unchanged key. */
+  resolve?(reference: string): Promise<{ value?: string; source?: string } | undefined>
+  set?(reference: string, value: string): Promise<void>
+  unset?(reference: string): Promise<void>
+  modifyRecord?(
+    key: string,
+    update: (current: CredentialRecord | undefined) => Promise<CredentialRecord | undefined>,
+  ): Promise<unknown>
 }
 
 type WebRoute = {
@@ -234,7 +258,26 @@ export function apply(ctx: HostContext): void {
   if (typeof ctx.inject !== "function") return
 
   ctx.inject(["credentials"], (child) => {
-    credentialsFace = child.credentials
+    const credentials = child.credentials
+    if (credentials === undefined) return
+    credentialsFace = credentials
+    child.effect(() => {
+      const run = () => {
+        void syncCredentialState(credentials, { logger: ctx.logger }).catch((error: unknown) => {
+          warn(ctx.logger, "dsh-muse-code: could not sync the Muse Code credentials", error)
+        })
+      }
+      run()
+      const timer = setInterval(run, REFRESH_CHECK_MS)
+      timer.unref?.()
+      const dispose = ctx.on?.("credentials/record-updated", (key: string) => {
+        if (key === AUTH_KEY) run()
+      })
+      return () => {
+        clearInterval(timer)
+        dispose?.()
+      }
+    }, "dsh-muse-code: credential sync")
   })
 
   ctx.inject(["webServer"], (child) => {
@@ -644,10 +687,28 @@ export async function ensureMuseRoute(
     if (row !== undefined) {
       const providers = row.value["providers"]
       const declared = isRecord(providers) && Object.hasOwn(providers, PROVIDER)
-      if (declared) return false
-      await settings.update(SETTINGS_NS, { providers: { [PROVIDER]: { displayName: ROUTE_LABEL } } }, row.revision)
-      logger?.info?.(`dsh-muse-code: declared the ${PROVIDER} route in Settings > Models`)
-      return true
+      if (!declared) {
+        await settings.update(
+          SETTINGS_NS,
+          { providers: { [PROVIDER]: { displayName: ROUTE_LABEL, apiKeyEnv: CREDENTIAL_REFERENCE } } },
+          row.revision,
+        )
+        logger?.info?.(`dsh-muse-code: declared the ${PROVIDER} route in Settings > Models`)
+        return true
+      }
+      const profile = isRecord(providers) ? providers[PROVIDER] : undefined
+      if (isRecord(profile) && profile["apiKeyEnv"] === undefined) {
+        // The Models page paints the row's credential dot only for a route that
+        // names a reference; add ours without touching the rest of the profile.
+        await settings.update(
+          SETTINGS_NS,
+          { providers: { [PROVIDER]: { apiKeyEnv: CREDENTIAL_REFERENCE } } },
+          row.revision,
+        )
+        logger?.info?.(`dsh-muse-code: linked the ${PROVIDER} route to ${CREDENTIAL_REFERENCE}`)
+        return true
+      }
+      return false
     }
     if (attempt < attempts - 1 && delayMs > 0) await sleep(delayMs)
   }
@@ -683,7 +744,10 @@ export async function syncMuseModels(
   const providers = row.value["providers"]
   if (!isRecord(providers) || !isRecord(providers[PROVIDER])) return false
   const profile = providers[PROVIDER]
-  if (profile["models"] !== undefined) return false
+  // The Settings form projects absent arrays as `[]`, so only a non-empty
+  // declared list counts as a user-owned catalog.
+  const declaredModels = profile["models"]
+  if (declaredModels !== undefined && (!Array.isArray(declaredModels) || declaredModels.length > 0)) return false
   const ids = await (options.fetchModelIds ?? fetchLiveModelIds)(accessKey)
   if (ids === null || ids.length === 0) {
     logger?.debug?.("dsh-muse-code: live catalog unavailable; keeping the shipped pi-ai catalog")
@@ -789,6 +853,153 @@ async function waitForCredentials(
     if (attempt < attempts - 1 && delayMs > 0) await sleep(delayMs)
   }
   return undefined
+}
+
+/** Injected side effects for the credential bridge, overridable in tests. */
+export type CredentialSyncOptions = {
+  logger?: Logger
+  fetchImpl?: typeof fetch
+  now?: () => number
+  refreshWindowMs?: number
+}
+
+/**
+ * Keep the route's credential reference equal to the OAuth record's minted key
+ * and re-mint that key before it expires.
+ *
+ * The route names `apiKeyEnv: MUSE_CODE_SUB_TOKEN` so DSH paints its credential
+ * dot; an explicit reference is also the highest-priority auth override, which
+ * means the plugin must keep it fresh itself. The OAuth record stays the source
+ * of truth (the shipped flow wrote it, and it carries the non-renewable identity
+ * token), so this only mirrors its `access` field and rotates it ahead of
+ * expiry through the pinned key-mint endpoint.
+ *
+ * @param credentials - the credential seam.
+ * @param options - injected side effects, overridable in tests.
+ * @returns which steps ran.
+ */
+export async function syncCredentialState(
+  credentials: CredentialsFace,
+  options: CredentialSyncOptions = {},
+): Promise<{ refreshed: boolean; mirrored: boolean }> {
+  const refreshed = await refreshCredentialRecord(credentials, options)
+  const mirrored = await mirrorCredentialReference(credentials, options)
+  return { refreshed, mirrored }
+}
+
+/**
+ * Copy the record's minted inference key into the route's credential reference,
+ * or clear the reference when the record is gone (the row then shows red).
+ * @param credentials - the credential seam.
+ * @param options - injected side effects.
+ * @returns whether the stored reference now carries a key.
+ */
+export async function mirrorCredentialReference(
+  credentials: CredentialsFace,
+  options: CredentialSyncOptions = {},
+): Promise<boolean> {
+  let access: string | undefined
+  try {
+    const record = await credentials.readRecord(AUTH_KEY)
+    const payload = isRecord(record?.payload) ? record.payload : undefined
+    access = typeof payload?.["access"] === "string" && payload["access"].length > 0 ? payload["access"] : undefined
+  } catch (error) {
+    warn(options.logger, "dsh-muse-code: could not read the Muse Code record", error)
+    return false
+  }
+  try {
+    if (access === undefined) {
+      await credentials.unset?.(CREDENTIAL_REFERENCE)
+      return false
+    }
+    const current = credentials.resolve === undefined ? undefined : await credentials.resolve(CREDENTIAL_REFERENCE)
+    if (current?.value !== access) await credentials.set?.(CREDENTIAL_REFERENCE, access)
+    return true
+  } catch (error) {
+    warn(options.logger, "dsh-muse-code: could not mirror the Muse Code credential", error)
+    return false
+  }
+}
+
+/**
+ * Re-mint the inference key from the record's identity token when the current
+ * key is close to expiry, and store it back into the record.
+ * @param credentials - the credential seam.
+ * @param options - injected side effects.
+ * @returns whether a fresh key was minted and stored.
+ */
+export async function refreshCredentialRecord(
+  credentials: CredentialsFace,
+  options: CredentialSyncOptions = {},
+): Promise<boolean> {
+  if (credentials.modifyRecord === undefined) return false
+  const now = options.now?.() ?? Date.now()
+  let identity: string | undefined
+  let expires: number | undefined
+  try {
+    const record = await credentials.readRecord(AUTH_KEY)
+    const payload = isRecord(record?.payload) ? record.payload : undefined
+    identity = typeof payload?.["refresh"] === "string" && payload["refresh"].length > 0 ? payload["refresh"] : undefined
+    expires = typeof payload?.["expires"] === "number" ? payload["expires"] : undefined
+  } catch {
+    return false
+  }
+  if (identity === undefined) return false
+  if (expires !== undefined && expires - now > (options.refreshWindowMs ?? REFRESH_WINDOW_MS)) return false
+  let minted: string | undefined
+  try {
+    minted = await mintInferenceKey(identity, options.fetchImpl ?? fetch)
+  } catch (error) {
+    warn(options.logger, "dsh-muse-code: could not refresh the Muse Code key", error)
+    return false
+  }
+  if (minted === undefined) return false
+  try {
+    await credentials.modifyRecord(AUTH_KEY, async (current) => {
+      const payload = isRecord(current?.payload) ? current.payload : undefined
+      // Another writer (a fresh sign-in) replaced the identity token meanwhile:
+      // keep its record instead of stamping a key minted from the old session.
+      if (payload === undefined || payload["refresh"] !== identity) return current
+      return {
+        ...current,
+        payload: { ...payload, access: minted, expires: now + KEY_LIFETIME_MS },
+      }
+    })
+    return true
+  } catch (error) {
+    warn(options.logger, "dsh-muse-code: could not store the refreshed Muse Code key", error)
+    return false
+  }
+}
+
+/**
+ * Exchange the non-renewable Meta identity token for a fresh inference key.
+ * @param identityToken - the record's `refresh` field.
+ * @param fetchImpl - injectable fetch.
+ * @param timeoutMs - request bound.
+ * @returns the minted key, or undefined on any failure.
+ */
+export async function mintInferenceKey(
+  identityToken: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = MODELS_TIMEOUT_MS,
+): Promise<string | undefined> {
+  const response = await fetchImpl(KEY_MINT_URL, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${identityToken}`,
+      "Content-Type": "application/json",
+      "x-api-version": "1.0.0",
+    },
+    body: "{}",
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!response.ok) return undefined
+  const body: unknown = await response.json()
+  if (!isRecord(body)) return undefined
+  const apiKey = body["api_key"]
+  return typeof apiKey === "string" && apiKey.length > 0 ? apiKey : undefined
 }
 
 function setCorsHeaders(response: ServerResponse): void {

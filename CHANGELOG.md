@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-10-26
+
+### Added
+
+- Native credential dot on the **Muse Code (Meta subscription)** row: the route names
+  `apiKeyEnv: MUSE_CODE_SUB_TOKEN`; the plugin mirrors the OAuth record's minted key into that
+  reference (red without a credential, green with one) and re-mints it before Meta's ~24 h
+  expiry, because an explicit reference is DSH's highest-priority auth override.
+- Documented the Meta prompt-cache behavior (`prompt_cache_key` = DSH session id) and the
+  meaning/consequences of the generic **Edit** and **Delete** row actions.
+
+### Fixed
+
+- The live catalog sync no longer mistakes the empty `models` array that the Settings form
+  projects for a user-owned catalog, so Muse Wonder keeps being filled into the route.
+
 ## [0.2.1] - 2026-10-26
 
 ### Added

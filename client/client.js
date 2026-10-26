@@ -83,9 +83,9 @@ loader?.load({
     function statusView(phase) {
       if (phase === "authorized") return { label: "Signed in", color: COLOR.labelSuccess }
       if (phase === "pending" || phase === "starting") return { label: "Waiting for Meta…", color: COLOR.labelWarn }
-      if (phase === "failed") return { label: "Sign-in failed", color: COLOR.labelError }
       if (phase === "checking") return { label: "Checking…", color: COLOR.labelTertiary }
-      return { label: "Not signed in", color: COLOR.labelTertiary }
+      // Not signed in, or the last attempt failed: the row reads red.
+      return { label: phase === "failed" ? "Sign-in failed" : "Not signed in", color: COLOR.labelError }
     }
 
     function MuseCodeSignIn() {
