@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Muse Code",
+    "description": "Declares the shipped Meta provider route for the Muse Code subscription and adds the /muse-login sign-in command."
+  }
+}

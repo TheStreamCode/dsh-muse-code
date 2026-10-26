@@ -10,12 +10,14 @@ sibling Muse plugins (`hermes-muse-code`, `openclaw-muse-code`, `opencode-muse-a
 
 ## Layout
 
-- `src/` — bundle source: provider route wiring, device-code login, credential handling.
+- `src/` — bundle source: route declaration in the `llm-pi-ai` settings section, the
+  `/muse-login` command, and the Client half's Settings → Models hint.
 - `lib/` — compiled output, committed because DSH bundle installs from Git may not run a build.
   Regenerate with `npm run build`; never edit by hand.
 - `test/` — `node:test` suite; new behavior needs a test.
-- `cordis.patch.yml` — bundle patch that inserts the model route and the auth plugin.
-- `AUTH_CONTRACT.md` — pinned device-flow and key-mint contract shared with the sibling plugins.
+- `cordis.patch.yml` — bundle patch that inserts the single integration row.
+- `AUTH_CONTRACT.md` — pinned device-flow and key-mint contract shared with the sibling plugins;
+  DeepSeek Harness implements it, the bundle does not.
 - `.github/workflows/` — CI; do not weaken checks, pins, or permissions.
 
 ## Commands
@@ -35,6 +37,10 @@ any local credential file.
 
 - Keep changes focused; no drive-by refactors, no new runtime dependencies without a stated
   reason.
+- The provider route and the device-code flow are DeepSeek Harness features: declare the shipped
+  `meta` route and run the shipped `llm-pi-ai/meta` flow. Never insert a second
+  `@deepseek-ai/dsh-llm-pi-ai` instance — every instance declares the whole provider catalog and
+  the extra row cannot activate.
 - Public documentation, comments, and commit messages are in English.
 - Do not change `LICENSE`, `DISCLAIMER.md`, `AUTH_CONTRACT.md`, `SECURITY.md`,
   `CODE_OF_CONDUCT.md`, or release metadata unless the task is about them.
