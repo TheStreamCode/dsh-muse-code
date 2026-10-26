@@ -3,19 +3,20 @@
 // DeepSeek Harness already serves this subscription: the shipped pi-ai catalog
 // exposes the `meta` route (api.meta.ai/v1) and registers the `llm-pi-ai/meta`
 // authorization flow, which runs Meta's device-code login and stores the
-// renewable credential record. The Web/Desktop Settings surface has no generic
-// button for provider OAuth flows, so this bundle adds the pieces a user needs:
+// renewable credential record. This bundle adds what the harness does not:
 //
 // - it declares the `meta` route in the `llm-pi-ai` settings section, so the
 //   provider appears under Settings > Models and its models in the model picker;
-// - it exposes the shipped sign-in as the `/muse-login` command;
-// - it registers an exact Web route (`/muse-code/login`) and a Sign in control
-//   under Settings > Models that calls it, because the Settings page cannot
-//   reach the Host authorization seam through the Remote API.
-//
-// The Host opens the verification page in the user's default browser itself; the
-// route and the command also return the code and the URL, so a blocked browser
-// never strands the sign-in.
+// - it syncs the account's live chat catalog (`GET /v1/models`) into that
+//   route, so models the shipped pi-ai catalog does not list (Muse Wonder and
+//   future ids) are selectable without a DSH update;
+// - it exposes the shipped sign-in as `/muse-login` and as an exact local Web
+//   route (`POST /muse-code/login`) that the Settings control calls, because
+//   the Settings page cannot reach the authorization seam through the Remote
+//   API;
+// - it reports the sign-in state (`GET /muse-code/status`) so both the Settings
+//   control and the command can say "signed in" instead of leaving the user
+//   waiting after Meta confirmed.
 //
 // A second `@deepseek-ai/dsh-llm-pi-ai` instance is not an option: every
 // instance declares the whole installed provider catalog, so the extra instance
@@ -40,8 +41,29 @@ const AUTH_METHOD = "oauth"
 const ROUTE_LABEL = "Muse Code (Meta subscription)"
 /** Web route the Settings control calls to start the sign-in. */
 export const LOGIN_ROUTE = "/muse-code/login"
+/** Web route that reports whether the sign-in completed. */
+export const STATUS_ROUTE = "/muse-code/status"
 /** How long the sign-in waits for the device-code notice before giving up. */
 const NOTICE_TIMEOUT_MS = 20_000
+/** How long `/muse-login` waits for Meta's confirmation before answering. */
+const RESULT_WAIT_MS = 120_000
+/** Live chat catalog of the Meta Model API. */
+const MODELS_URL = "https://api.meta.ai/v1/models"
+const MODELS_TIMEOUT_MS = 8_000
+/** Endpoint families the Muse subscription also lists but DSH cannot chat with. */
+const NON_CHAT_PREFIXES = ["sam-", "muse-image-", "muse-voice-"]
+/** Family defaults mirrored from the sibling Muse plugins and the pi-ai catalog. */
+const MUSE_CONTEXT_WINDOW = 1_048_576
+const MUSE_MAX_OUTPUT_TOKENS = 131_072
+
+/** The five Muse Spark rows the shipped pi-ai catalog describes, with fidelity. */
+const SPARK_MODELS: Record<string, { name: string; max: boolean }> = {
+  "muse-spark-1.1": { name: "Muse Spark 1.1", max: false },
+  "muse-spark-1.2": { name: "Muse Spark 1.2", max: false },
+  "muse-spark-1.2-contributor": { name: "Muse Spark 1.2 Contributor", max: false },
+  "muse-spark-1.3": { name: "Muse Spark 1.3", max: true },
+  "muse-spark-1.3-contributor": { name: "Muse Spark 1.3 Contributor", max: false },
+}
 
 type Logger = {
   info?(message: string): void
@@ -110,6 +132,16 @@ type SettingsFace = {
   update(ns: string, patch: Record<string, unknown>, expectedRevision: number): Promise<void>
 }
 
+type CredentialRecord = {
+  kind?: string
+  payload?: Record<string, unknown>
+}
+
+type CredentialsFace = {
+  readRecord(key: string): Promise<CredentialRecord | undefined>
+  describeRecord(key: string): Promise<{ configured: boolean }>
+}
+
 type WebRoute = {
   kind: "exact" | "prefix"
   path: string
@@ -123,6 +155,7 @@ type WebServerFace = {
 type ChildContext = HostContext & {
   settings?: SettingsFace
   webServer?: WebServerFace
+  credentials?: CredentialsFace
 }
 
 type HostContext = {
@@ -131,12 +164,46 @@ type HostContext = {
   logger?: Logger
   effect(callback: () => () => void, label?: string): () => void
   inject?(dependencies: string[], callback: (child: ChildContext) => void): void
+  on?(event: string, listener: (...args: never[]) => void): () => void
+}
+
+/** One sign-in lifecycle fact the surfaces can read. */
+export type SignInSnapshot = {
+  state: "idle" | "pending" | "authorized" | "failed" | "cancelled"
+  text?: string
+  code?: string
+  at: number
+}
+
+/** Mutable snapshot shared by the command and the two Web routes. */
+export type SignInState = {
+  get(): SignInSnapshot
+  set(snapshot: SignInSnapshot): void
+}
+
+/** Create one empty sign-in state. */
+export function createSignInState(): SignInState {
+  let snapshot: SignInSnapshot = { state: "idle", at: 0 }
+  return {
+    get: () => snapshot,
+    set: (next) => {
+      snapshot = next
+    },
+  }
 }
 
 /** Injected side effects, overridable in tests. */
 export type SignInOptions = {
   openBrowser?: (url: string) => boolean
   timeoutMs?: number
+  /** How long the command waits for Meta's confirmation after opening the page. */
+  waitForResultMs?: number
+  state?: SignInState
+  credentials?: () => CredentialsFace | undefined
+  /** Capture the background attempt so the command can wait for its result. */
+  onAttempt?: (attempt: Promise<{ status: string }>) => void
+  /** Override the live catalog fetch, for tests. */
+  fetchModelIds?: (accessKey: string) => Promise<string[] | null>
 }
 
 /** Actionable instructions extracted from one authorization notice. */
@@ -150,42 +217,65 @@ export type SignInInstruction = {
 }
 
 type SignInOutcome =
-  | { ok: true; text: string; url: string; code?: string }
+  | { ok: true; opened: boolean; text: string; url: string; code?: string }
   | { ok: false; reason: "unavailable" | "busy" | "timeout" | "failed" | "ended"; text: string }
 
 /**
- * Register the sign-in command, the Settings > Models sign-in route, and the
- * settings write that makes the Muse Code provider visible.
+ * Register the sign-in command, the Settings > Models routes, the live catalog
+ * sync, and the settings write that makes the Muse Code provider visible.
  * @param ctx - Host plugin context.
  */
 export function apply(ctx: HostContext): void {
-  ctx.effect(() => ctx.commands.register(museLoginCommand(ctx)), "dsh-muse-code: /muse-login")
+  const state = createSignInState()
+  let credentialsFace: CredentialsFace | undefined
+  const options: SignInOptions = { state, credentials: () => credentialsFace }
 
+  ctx.effect(() => ctx.commands.register(museLoginCommand(ctx, options)), "dsh-muse-code: /muse-login")
   if (typeof ctx.inject !== "function") return
+
+  ctx.inject(["credentials"], (child) => {
+    credentialsFace = child.credentials
+  })
 
   ctx.inject(["webServer"], (child) => {
     const webServer = child.webServer
     if (webServer === undefined) return
-    child.effect(
-      () =>
-        webServer.register({
-          kind: "exact",
-          path: LOGIN_ROUTE,
-          handler: createLoginRouteHandler(ctx),
-        }),
-      "dsh-muse-code: login route",
-    )
+    child.effect(() => {
+      const disposeLogin = webServer.register({
+        kind: "exact",
+        path: LOGIN_ROUTE,
+        handler: createLoginRouteHandler(ctx, options),
+      })
+      const disposeStatus = webServer.register({
+        kind: "exact",
+        path: STATUS_ROUTE,
+        handler: createStatusRouteHandler(ctx, options),
+      })
+      return () => {
+        disposeStatus()
+        disposeLogin()
+      }
+    }, "dsh-muse-code: login routes")
   })
 
   ctx.inject(["settings"], (child) => {
     child.effect(() => {
       const settings = child.settings
       if (settings === undefined) return () => {}
-      void ensureMuseRoute(settings, ctx.logger).catch((error: unknown) => {
-        warn(ctx.logger, "dsh-muse-code: could not declare the Muse Code route", error)
+      const refresh = () => {
+        void (async () => {
+          await ensureMuseRoute(settings, ctx.logger)
+          await syncMuseModels(settings, ctx.logger, options)
+        })().catch((error: unknown) => {
+          warn(ctx.logger, "dsh-muse-code: could not refresh the Muse Code settings", error)
+        })
+      }
+      refresh()
+      const dispose = ctx.on?.("credentials/record-updated", (key: string) => {
+        if (key === AUTH_KEY) refresh()
       })
-      return () => {}
-    }, "dsh-muse-code: declare route")
+      return dispose ?? (() => {})
+    }, "dsh-muse-code: settings")
   })
 }
 
@@ -198,17 +288,37 @@ export function museLoginCommand(
     name: "muse-login",
     description: "Sign in to the Muse Code (Meta) subscription and enable its models",
     async handler() {
-      const outcome = await startSignIn(ctx, options)
-      if (outcome.ok) return { kind: "success", text: outcome.text }
-      return { kind: "error", text: outcome.text }
+      let attempt: Promise<{ status: string }> | undefined
+      const started = await startSignIn(ctx, {
+        ...options,
+        onAttempt: (pending) => {
+          attempt = pending
+        },
+      })
+      if (!started.ok) return { kind: "error", text: started.text }
+      const waitMs = options.waitForResultMs ?? RESULT_WAIT_MS
+      if (!started.opened || attempt === undefined || waitMs <= 0) {
+        return { kind: "success", text: started.text }
+      }
+      const result = await waitForSettlement(attempt, waitMs)
+      if (result === undefined) {
+        return { kind: "success", text: `${started.text} Still waiting for Meta: the sign-in completes when you approve the page.` }
+      }
+      if (result.status === "authorized") {
+        return { kind: "success", text: "Muse Code is signed in. Its models are available in the model picker." }
+      }
+      return {
+        kind: "error",
+        text: `Muse Code sign-in ended (${result.status}). Run /muse-login again to retry.`,
+      }
     },
   }
 }
 
 /**
  * Build the exact Web route that starts the same sign-in from the Settings
- * page. The route answers JSON so the Client control can render the code and
- * the failure reason next to its button.
+ * page. POST answers JSON for the Settings control; GET answers a small page
+ * that shows the code and polls the status route until Meta confirms.
  * @param ctx - Host plugin context.
  * @param options - injected side effects, overridable in tests.
  * @returns an HTTP handler for {@link LOGIN_ROUTE}.
@@ -226,7 +336,7 @@ export function createLoginRouteHandler(
     }
     if (request.method === "GET") {
       // A plain navigation: this tab is the browser, so the flow need not open
-      // another one. The page shows the code and moves on to Meta's page.
+      // another one. The page itself polls the status route.
       const outcome = await startSignIn(ctx, { ...options, openBrowser: () => false })
       sendHtml(response, signInPage(outcome))
       return
@@ -237,11 +347,72 @@ export function createLoginRouteHandler(
     }
     const outcome = await startSignIn(ctx, options)
     if (outcome.ok) {
-      sendJson(response, 200, { ok: true, text: outcome.text, url: outcome.url, code: outcome.code })
+      sendJson(response, 200, {
+        ok: true,
+        text: outcome.text,
+        url: outcome.url,
+        code: outcome.code,
+        opened: outcome.opened,
+      })
       return
     }
     const status = outcome.reason === "busy" ? 409 : outcome.reason === "timeout" ? 504 : 500
     sendJson(response, status, { ok: false, reason: outcome.reason, text: outcome.text })
+  }
+}
+
+/**
+ * Build the exact Web route that reports the sign-in state, so the Settings
+ * control can flip to "Signed in" after Meta confirms.
+ * @param ctx - Host plugin context.
+ * @param options - injected side effects, overridable in tests.
+ * @returns an HTTP handler for {@link STATUS_ROUTE}.
+ */
+export function createStatusRouteHandler(
+  ctx: HostContext,
+  options: SignInOptions = {},
+): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    setCorsHeaders(response)
+    if (request.method === "OPTIONS") {
+      response.writeHead(204)
+      response.end()
+      return
+    }
+    if (request.method !== "GET") {
+      sendJson(response, 405, { ok: false, text: "Use GET for the sign-in status." })
+      return
+    }
+    const snapshot = options.state?.get()
+    try {
+      const credentials = options.credentials?.()
+      if (credentials !== undefined) {
+        const record = await credentials.describeRecord(AUTH_KEY)
+        if (record.configured) {
+          sendJson(response, 200, { state: "authorized", text: "Muse Code is signed in." })
+          return
+        }
+      }
+    } catch {
+      // Fall through to the in-memory state.
+    }
+    const entry = ctx.authorization.describe(AUTH_KEY)
+    if (entry?.inFlight === true) {
+      sendJson(response, 200, {
+        state: "pending",
+        ...(snapshot?.text === undefined ? {} : { text: snapshot.text }),
+        ...(snapshot?.code === undefined ? {} : { code: snapshot.code }),
+      })
+      return
+    }
+    if (snapshot !== undefined && snapshot.state !== "idle") {
+      sendJson(response, 200, {
+        state: snapshot.state,
+        ...(snapshot.text === undefined ? {} : { text: snapshot.text }),
+      })
+      return
+    }
+    sendJson(response, 200, { state: "idle" })
   }
 }
 
@@ -254,30 +425,24 @@ export function createLoginRouteHandler(
  * @returns the user-facing outcome.
  */
 export async function startSignIn(ctx: HostContext, options: SignInOptions = {}): Promise<SignInOutcome> {
+  const fail = (reason: Extract<SignInOutcome, { ok: false }>["reason"], text: string): SignInOutcome => {
+    options.state?.set({ state: "failed", text, at: Date.now() })
+    return { ok: false, reason, text }
+  }
   const entry = ctx.authorization.describe(AUTH_KEY)
   if (entry === undefined) {
-    return {
-      ok: false,
-      reason: "unavailable",
-      text:
-        "Muse Code is unavailable: this DeepSeek Harness build has no Meta sign-in flow " +
+    return fail(
+      "unavailable",
+      "Muse Code is unavailable: this DeepSeek Harness build has no Meta sign-in flow " +
         `(${AUTH_KEY}). Update DeepSeek Harness or add the Meta provider under Settings > Models first.`,
-    }
+    )
   }
   if (entry.inFlight) {
-    return {
-      ok: false,
-      reason: "busy",
-      text: "A Muse Code sign-in is already running. Approve it in the browser, then retry.",
-    }
+    return fail("busy", "A Muse Code sign-in is already running. Approve it in the browser, then retry.")
   }
   const method = entry.methods.find((candidate) => candidate.id === AUTH_METHOD)?.id ?? entry.methods[0]?.id
   if (method === undefined) {
-    return {
-      ok: false,
-      reason: "unavailable",
-      text: `The Muse Code sign-in flow offers no method to run (${AUTH_KEY}).`,
-    }
+    return fail("unavailable", `The Muse Code sign-in flow offers no method to run (${AUTH_KEY}).`)
   }
 
   const openBrowser = options.openBrowser ?? openExternal
@@ -302,11 +467,26 @@ export async function startSignIn(ctx: HostContext, options: SignInOptions = {})
       },
     },
   })
+  options.onAttempt?.(attempt)
   // The attempt outlives the request that started it: Meta approval arrives
   // later and the seam stores the credential then.
   attempt.then(
-    (outcome) => ctx.logger?.info?.(`dsh-muse-code: sign-in settled as ${outcome.status}`),
-    (failure: unknown) => warn(ctx.logger, "dsh-muse-code: sign-in failed", failure),
+    (outcome) => {
+      options.state?.set({
+        state: outcome.status === "authorized" ? "authorized" : "cancelled",
+        text:
+          outcome.status === "authorized"
+            ? "Muse Code is signed in."
+            : `Muse Code sign-in ended (${outcome.status}).`,
+        at: Date.now(),
+      })
+      ctx.logger?.info?.(`dsh-muse-code: sign-in settled as ${outcome.status}`)
+    },
+    (failure: unknown) => {
+      const text = `Muse Code sign-in failed: ${messageOf(failure)}`
+      options.state?.set({ state: "failed", text, at: Date.now() })
+      warn(ctx.logger, "dsh-muse-code: sign-in failed", failure)
+    },
   )
 
   const announcedNotice = notice.then((instruction) => ({ kind: "notice" as const, instruction }))
@@ -321,48 +501,78 @@ export async function startSignIn(ctx: HostContext, options: SignInOptions = {})
   })
   try {
     const outcome = await Promise.race([announcedNotice, settled, timeout])
-    if (outcome.kind === "notice") {
-      return successOutcome(outcome.instruction, openBrowser)
-    }
+    if (outcome.kind === "notice") return successOutcome(outcome.instruction, openBrowser, options.state)
     if (outcome.kind === "timeout") {
       ctx.authorization.cancel?.(AUTH_KEY)
-      return {
-        ok: false,
-        reason: "timeout",
-        text:
-          "Muse Code sign-in did not answer in time. Check the connection and run /muse-login again.",
-      }
+      return fail(
+        "timeout",
+        "Muse Code sign-in did not answer in time. Check the connection and run /muse-login again.",
+      )
     }
     if (outcome.kind === "failed") {
       const text = messageOf(outcome.failure)
       if (/already running/i.test(text)) {
-        return { ok: false, reason: "busy", text: "A Muse Code sign-in is already running. Approve it in the browser, then retry." }
+        return fail("busy", "A Muse Code sign-in is already running. Approve it in the browser, then retry.")
       }
-      return { ok: false, reason: "failed", text: `Muse Code sign-in failed: ${text}` }
+      return fail("failed", `Muse Code sign-in failed: ${text}`)
     }
-    if (announced !== undefined) return successOutcome(announced, openBrowser)
+    if (announced !== undefined) return successOutcome(announced, openBrowser, options.state)
     if (outcome.outcome.status === "authorized") {
-      return {
-        ok: false,
-        reason: "ended",
-        text: "Muse Code sign-in finished without showing a code. Run /muse-login again if the models stay unavailable.",
-      }
+      return fail("ended", "Muse Code sign-in finished without showing a code. Run /muse-login again if the models stay unavailable.")
     }
-    return { ok: false, reason: "ended", text: `Muse Code sign-in ended (${outcome.outcome.status}).` }
+    return fail("ended", `Muse Code sign-in ended (${outcome.outcome.status}).`)
   } finally {
     if (timer.handle !== undefined) clearTimeout(timer.handle)
   }
 }
 
-function successOutcome(instruction: SignInInstruction, openBrowser: (url: string) => boolean): SignInOutcome {
+function successOutcome(
+  instruction: SignInInstruction,
+  openBrowser: (url: string) => boolean,
+  state: SignInState | undefined,
+): SignInOutcome {
   // The browser hand-off is a courtesy for a purely local effect: the user must
   // still confirm the code on Meta's page, and both surfaces expose the URL.
   const opened = openBrowser(instruction.completeUrl)
+  const text = formatSignInText(instruction, opened)
+  state?.set({
+    state: "pending",
+    text,
+    ...(instruction.code === undefined ? {} : { code: instruction.code }),
+    at: Date.now(),
+  })
   return {
     ok: true,
+    opened,
     url: instruction.completeUrl,
     ...(instruction.code === undefined ? {} : { code: instruction.code }),
-    text: formatSignInText(instruction, opened),
+    text,
+  }
+}
+
+/**
+ * Wait for one sign-in attempt to settle, bounded by the caller's deadline.
+ * @param attempt - the background attempt promise.
+ * @param waitMs - upper bound in milliseconds.
+ * @returns the settled outcome, or undefined on timeout/failure to settle.
+ */
+export async function waitForSettlement(
+  attempt: Promise<{ status: string }>,
+  waitMs: number,
+): Promise<{ status: string } | undefined> {
+  const settled = attempt.then(
+    (outcome) => outcome,
+    () => ({ status: "failed" }),
+  )
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), waitMs)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.race([settled, deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -401,12 +611,12 @@ export function readSignInNotice(notice: AuthorizationNotice): SignInInstruction
  */
 export function formatSignInText(instruction: SignInInstruction, opened: boolean): string {
   const openPart = opened
-    ? "A browser tab should have opened; if not, open it yourself."
-    : "Open this page in your browser."
+    ? "A browser tab should have opened."
+    : "Open the sign-in page in your browser."
   const codePart = instruction.code === undefined
-    ? "Confirm the sign-in on the Meta page."
+    ? "Confirm the sign-in on Meta's page."
     : `Confirm the code ${instruction.code} there.`
-  return `Muse Code sign-in started. ${openPart} ${codePart} Page: ${instruction.completeUrl} Muse Code models become available as soon as Meta confirms.`
+  return `Muse Code sign-in started. ${openPart} ${codePart} The models become available as soon as Meta confirms.`
 }
 
 /**
@@ -445,9 +655,145 @@ export async function ensureMuseRoute(
   return false
 }
 
+/**
+ * Sync the account's live chat catalog into the declared route.
+ *
+ * Meta lists the subscription catalog behind the minted key and publishes no
+ * static metadata, so the ids are turned into conservative DSH model entries:
+ * the five Muse Spark rows keep the shipped catalog's fidelity, every other
+ * chat id (Muse Wonder included) takes the family defaults. A route that
+ * already declares its own `models` list is left untouched.
+ *
+ * @param settings - the Settings form service.
+ * @param logger - optional plugin logger.
+ * @param options - credentials access and fetch override, for tests.
+ * @returns whether this call wrote a model list.
+ */
+export async function syncMuseModels(
+  settings: SettingsFace,
+  logger?: Logger,
+  options: Pick<SignInOptions, "credentials" | "fetchModelIds"> = {},
+): Promise<boolean> {
+  const credentials = await waitForCredentials(options.credentials)
+  if (credentials === undefined) return false
+  const accessKey = await readSubscriptionKey(credentials)
+  if (accessKey === undefined) return false
+  const row = settings.describe().find((candidate) => candidate.ns === SETTINGS_NS)
+  if (row === undefined) return false
+  const providers = row.value["providers"]
+  if (!isRecord(providers) || !isRecord(providers[PROVIDER])) return false
+  const profile = providers[PROVIDER]
+  if (profile["models"] !== undefined) return false
+  const ids = await (options.fetchModelIds ?? fetchLiveModelIds)(accessKey)
+  if (ids === null || ids.length === 0) {
+    logger?.debug?.("dsh-muse-code: live catalog unavailable; keeping the shipped pi-ai catalog")
+    return false
+  }
+  const models = ids.filter(isChatModelId).map(museModelEntry)
+  if (models.length === 0) return false
+  await settings.update(
+    SETTINGS_NS,
+    { providers: { [PROVIDER]: { displayName: ROUTE_LABEL, models } } },
+    row.revision,
+  )
+  logger?.info?.(`dsh-muse-code: synced ${String(models.length)} Muse models from the account catalog`)
+  return true
+}
+
+/** Map one live model id to a conservative DSH pi-ai model entry. */
+export function museModelEntry(id: string): Record<string, unknown> {
+  const known = SPARK_MODELS[id]
+  const name = known?.name ?? prettifyModelName(id)
+  const withMax = known?.max === true
+  const reasoningEfforts: Record<string, string> = {
+    minimal: "minimal",
+    low: "low",
+    medium: "medium",
+    high: "high",
+    xhigh: "xhigh",
+    ...(withMax ? { max: "max" } : {}),
+  }
+  return {
+    id,
+    name,
+    contextWindow: MUSE_CONTEXT_WINDOW,
+    maxTokens: MUSE_MAX_OUTPUT_TOKENS,
+    input: ["text", "image"],
+    reasoningEfforts,
+  }
+}
+
+/** Whether one catalog id is a chat model this route can serve. */
+export function isChatModelId(id: string): boolean {
+  return !NON_CHAT_PREFIXES.some((prefix) => id.startsWith(prefix))
+}
+
+/** Turn a live model id into a display name ("muse-wonder-full-1.0"). */
+export function prettifyModelName(id: string): string {
+  if (!id.startsWith("muse-")) return id
+  return id
+    .split("-")
+    .map((part) => (/^\d/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(" ")
+}
+
+/**
+ * Fetch the account's live chat catalog.
+ * @param accessKey - minted subscription key stored in the OAuth record.
+ * @param timeoutMs - request bound.
+ * @returns the chat model ids, or null on any failure.
+ */
+export async function fetchLiveModelIds(
+  accessKey: string,
+  timeoutMs: number = MODELS_TIMEOUT_MS,
+): Promise<string[] | null> {
+  try {
+    const response = await fetch(MODELS_URL, {
+      headers: { Accept: "application/json", Authorization: `Bearer ${accessKey}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!response.ok) return null
+    const body: unknown = await response.json()
+    if (!isRecord(body) || !Array.isArray(body["data"])) return null
+    const ids: string[] = []
+    for (const row of body["data"]) {
+      if (isRecord(row) && typeof row["id"] === "string" && row["id"].length > 0) ids.push(row["id"])
+    }
+    return ids
+  } catch {
+    return null
+  }
+}
+
+async function readSubscriptionKey(credentials: CredentialsFace): Promise<string | undefined> {
+  try {
+    const record = await credentials.readRecord(AUTH_KEY)
+    const payload = record?.payload
+    if (!isRecord(payload)) return undefined
+    const access = payload["access"]
+    return typeof access === "string" && access.length > 0 ? access : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function waitForCredentials(
+  getter: (() => CredentialsFace | undefined) | undefined,
+  attempts = 8,
+  delayMs = 250,
+): Promise<CredentialsFace | undefined> {
+  if (getter === undefined) return undefined
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const face = getter()
+    if (face !== undefined) return face
+    if (attempt < attempts - 1 && delayMs > 0) await sleep(delayMs)
+  }
+  return undefined
+}
+
 function setCorsHeaders(response: ServerResponse): void {
   response.setHeader("Access-Control-Allow-Origin", "*")
-  response.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
   response.setHeader("Access-Control-Allow-Headers", "content-type")
   response.setHeader("Cache-Control", "no-store")
 }
@@ -464,29 +810,37 @@ function sendHtml(response: ServerResponse, html: string): void {
 }
 
 /**
- * The page a plain navigation to {@link LOGIN_ROUTE} receives: the code, the
- * fallback link, and an immediate move to Meta's verification page.
+ * The page a plain navigation to {@link LOGIN_ROUTE} receives: the code, a link
+ * to Meta, and a poll of {@link STATUS_ROUTE} until the sign-in completes.
  * @param outcome - result of the sign-in attempt.
  * @returns a self-contained HTML document.
  */
-function signInPage(outcome: SignInOutcome): string {
+export function signInPage(outcome: SignInOutcome): string {
   const title = "Muse Code sign-in"
   if (!outcome.ok) {
-    return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>` +
-      `<body style="font-family:system-ui,sans-serif;padding:2rem;line-height:1.5">` +
-      `<h1 style="font-size:1.1rem">${escapeHtml(title)}</h1>` +
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>` +
+      `<body style="font-family:system-ui,sans-serif;padding:2rem;line-height:1.6;max-width:42rem">` +
+      `<h1 style="font-size:1.15rem">${escapeHtml(title)}</h1>` +
       `<p>${escapeHtml(outcome.text)}</p>` +
-      `<p><a href="/muse-code/login">Try again</a></p></body></html>`
+      `<p><a href="${LOGIN_ROUTE}">Try again</a></p></body></html>`
   }
-  const codePart = outcome.code === undefined
+  const codeBlock = outcome.code === undefined
     ? ""
-    : `<p style="font-size:1.4rem;letter-spacing:0.1em"><strong>${escapeHtml(outcome.code)}</strong></p>`
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>` +
-    `<meta http-equiv="refresh" content="1; url=${escapeHtml(outcome.url)}"></head>` +
-    `<body style="font-family:system-ui,sans-serif;padding:2rem;line-height:1.5">` +
-    `<h1 style="font-size:1.1rem">${escapeHtml(title)}</h1>` +
-    `<p>Confirm this code on Meta's page:</p>${codePart}` +
-    `<p>If the page does not open, <a href="${escapeHtml(outcome.url)}">continue on Meta</a>.</p>` +
+    : `<p style="margin:1rem 0;font-size:1.5rem;letter-spacing:0.12em;font-family:ui-monospace,Consolas,monospace"><strong>${escapeHtml(outcome.code)}</strong></p>`
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>` +
+    `<body style="font-family:system-ui,sans-serif;padding:2rem;line-height:1.6;max-width:42rem">` +
+    `<h1 style="font-size:1.15rem">${escapeHtml(title)}</h1>` +
+    `<p>Confirm this code on Meta's page:</p>${codeBlock}` +
+    `<p><a href="${escapeHtml(outcome.url)}" target="_blank" rel="noreferrer">Open the Meta sign-in page</a></p>` +
+    `<p id="status" style="color:#6b7280">Waiting for Meta to confirm…</p>` +
+    `<script>(function(){var el=document.getElementById('status');var tries=0;` +
+    `function poll(){if(tries++>150){el.textContent='Still waiting. You can close this page and retry from Settings > Models.';return}` +
+    `fetch('${STATUS_ROUTE}',{headers:{accept:'application/json'}}).then(function(r){return r.json()})` +
+    `.then(function(s){if(!s){setTimeout(poll,2000);return}` +
+    `if(s.state==='authorized'){document.body.innerHTML='<h1 style="font-size:1.15rem">Muse Code</h1><p>Signed in. Muse Code models are available in DeepSeek Harness.</p>';return}` +
+    `if(s.state==='failed'||s.state==='cancelled'){document.body.innerHTML='<h1 style="font-size:1.15rem">Muse Code</h1><p>'+String(s.text||'Sign-in did not complete.').replace(/[<>&]/g,'')+'</p>';return}` +
+    `el.textContent='Waiting for Meta to confirm…';setTimeout(poll,2000)})` +
+    `.catch(function(){setTimeout(poll,3000)})}poll()})()</script>` +
     `</body></html>`
 }
 

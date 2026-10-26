@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "dsh-muse-code"
-version: 0.2.0
+version: 0.2.1
 date-released: "2026-10-26"
 url: "https://github.com/TheStreamCode/dsh-muse-code"
 repository-code: "https://github.com/TheStreamCode/dsh-muse-code"
