@@ -21,6 +21,7 @@ with:
 | API version header | `x-api-version: 1.0.0` |
 | Credential reference | `MUSE_CODE_SUB_TOKEN` |
 | Inference base URL | `https://api.meta.ai/v1` |
+| Inference wire adapter | see `ADAPTER_CONTRACT.md` (v3) |
 
 DeepSeek Harness stores the same sign-in as the OAuth credential record `llm-pi-ai/meta` and
 re-mints its short-lived key, because the pi-ai adapter owns that flow. The pinned
@@ -38,3 +39,7 @@ re-mints its short-lived key, because the pi-ai adapter owns that flow. The pinn
   sign-in as the `llm-pi-ai/meta` credential record and renews the key from it.
 - Any change to this contract bumps the version constant in the implementations' code and
   requires updating the pinned tests in all four repositories.
+- Inference traffic goes through the loopback adapter described in `ADAPTER_CONTRACT.md`
+  (tool-name aliasing, parameter normalization, response name restoration). The adapter is part
+  of the wire contract: a change to those rules bumps `ADAPTER_VERSION` and the pinned tests in
+  all four repositories.

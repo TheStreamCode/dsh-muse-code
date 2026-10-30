@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { type RunningAdapter } from "./adapter.js";
 export declare const name = "dsh-muse-code";
 export declare const inject: string[];
 /**
@@ -18,6 +19,8 @@ type Logger = {
     warn?(message: string, ...rest: unknown[]): void;
     debug?(message: string): void;
 };
+/** Starts the wire adapter; tests inject a stub instead of binding a port. */
+export type AdapterFactory = () => Promise<Pick<RunningAdapter, "baseUrl" | "close">>;
 type CommandResult = {
     kind: "success";
     text?: string;
@@ -191,8 +194,11 @@ type SignInOutcome = {
  * Register the sign-in command, the Settings > Models routes, the live catalog
  * sync, and the settings write that makes the Muse Code provider visible.
  * @param ctx - Host plugin context.
+ * @param overrides - Test seam: replace the local request adapter.
  */
-export declare function apply(ctx: HostContext): void;
+export declare function apply(ctx: HostContext, overrides?: {
+    adapter?: AdapterFactory;
+}): void;
 /** Preserve Meta's specific subscription refusal instead of classifying it as an invalid key. */
 export declare function explainClientRestriction(provider: string, chunks: AsyncIterable<ModelStreamChunk>): AsyncGenerator<ModelStreamChunk>;
 /** Command definition for the sign-in; exported for tests. */
@@ -254,16 +260,19 @@ export declare function formatSignInText(instruction: SignInInstruction, opened:
  *
  * The write is a merge into the entry's editable config, exactly what the
  * Models page does when a user adds this provider by hand; an already declared
- * `meta` profile is never touched.
+ * `meta` profile is never rewritten beyond the fields this bundle owns: the
+ * credential reference and, when the local adapter is running, its loopback
+ * `baseURL`.
  *
  * @param settings - the Settings form service.
  * @param logger - optional plugin logger.
- * @param options - retry window for late-activating profile entries.
- * @returns whether this call added the route.
+ * @param options - retry window, late-activating entries, adapter base URL.
+ * @returns whether this call added or repaired the route.
  */
 export declare function ensureMuseRoute(settings: SettingsFace, logger?: Logger, options?: {
     attempts?: number;
     delayMs?: number;
+    baseUrl?: string;
 }): Promise<boolean>;
 /**
  * Sync the account's live chat catalog into the declared route.

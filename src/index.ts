@@ -24,6 +24,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http"
 
+import { startMuseCodeAdapter, type RunningAdapter } from "./adapter.js"
 import { openExternal } from "./open-browser.js"
 
 export const name = "dsh-muse-code"
@@ -88,6 +89,9 @@ type Logger = {
   warn?(message: string, ...rest: unknown[]): void
   debug?(message: string): void
 }
+
+/** Starts the wire adapter; tests inject a stub instead of binding a port. */
+export type AdapterFactory = () => Promise<Pick<RunningAdapter, "baseUrl" | "close">>
 
 type CommandResult = { kind: "success"; text?: string } | { kind: "error"; text: string }
 
@@ -261,11 +265,28 @@ type SignInOutcome =
  * Register the sign-in command, the Settings > Models routes, the live catalog
  * sync, and the settings write that makes the Muse Code provider visible.
  * @param ctx - Host plugin context.
+ * @param overrides - Test seam: replace the local request adapter.
  */
-export function apply(ctx: HostContext): void {
+export function apply(ctx: HostContext, overrides: { adapter?: AdapterFactory } = {}): void {
   const state = createSignInState()
   let credentialsFace: CredentialsFace | undefined
   const options: SignInOptions = { state, credentials: () => credentialsFace }
+
+  // Meta's gate refuses subscription requests whose tool declarations collide
+  // with its builtin names; the adapter aliases those names on the wire. The
+  // route below points at it, so every inference request goes through.
+  const adapterReady = (overrides.adapter ?? (() => startMuseCodeAdapter({
+    log: (message: string) => ctx.logger?.debug?.(message),
+  })))().catch((error: unknown) => {
+    warn(ctx.logger, "dsh-muse-code: could not start the local request adapter", error)
+    return undefined
+  })
+  ctx.effect(
+    () => () => {
+      void adapterReady.then((adapter) => adapter?.close()).catch(() => {})
+    },
+    "dsh-muse-code: request adapter",
+  )
 
   ctx.effect(() => ctx.commands.register(museLoginCommand(ctx, options)), "dsh-muse-code: /muse-login")
   ctx.on?.("llm/stream", (request: { provider: string }, next: () => AsyncIterable<ModelStreamChunk>) =>
@@ -332,7 +353,8 @@ export function apply(ctx: HostContext): void {
       }
       const refresh = () => {
         void (async () => {
-          await ensureMuseRoute(settings, ctx.logger)
+          const adapter = await adapterReady
+          await ensureMuseRoute(settings, ctx.logger, { baseUrl: adapter?.baseUrl })
           await syncMuseModels(settings, ctx.logger, options)
           if (routeIsDeclared()) sawRoute = true
         })().catch((error: unknown) => {
@@ -755,20 +777,23 @@ export function formatSignInText(instruction: SignInInstruction, opened: boolean
  *
  * The write is a merge into the entry's editable config, exactly what the
  * Models page does when a user adds this provider by hand; an already declared
- * `meta` profile is never touched.
+ * `meta` profile is never rewritten beyond the fields this bundle owns: the
+ * credential reference and, when the local adapter is running, its loopback
+ * `baseURL`.
  *
  * @param settings - the Settings form service.
  * @param logger - optional plugin logger.
- * @param options - retry window for late-activating profile entries.
- * @returns whether this call added the route.
+ * @param options - retry window, late-activating entries, adapter base URL.
+ * @returns whether this call added or repaired the route.
  */
 export async function ensureMuseRoute(
   settings: SettingsFace,
   logger?: Logger,
-  options: { attempts?: number; delayMs?: number } = {},
+  options: { attempts?: number; delayMs?: number; baseUrl?: string } = {},
 ): Promise<boolean> {
   const attempts = options.attempts ?? 12
   const delayMs = options.delayMs ?? 250
+  const baseUrl = options.baseUrl
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const row = settings.describe().find((candidate) => candidate.ns === SETTINGS_NS)
     if (row !== undefined) {
@@ -777,23 +802,34 @@ export async function ensureMuseRoute(
       if (!declared) {
         await settings.update(
           SETTINGS_NS,
-          { providers: { [PROVIDER]: { displayName: ROUTE_LABEL, apiKeyEnv: CREDENTIAL_REFERENCE } } },
+          {
+            providers: {
+              [PROVIDER]: {
+                displayName: ROUTE_LABEL,
+                apiKeyEnv: CREDENTIAL_REFERENCE,
+                ...(baseUrl === undefined ? {} : { baseURL: baseUrl }),
+              },
+            },
+          },
           row.revision,
         )
         logger?.info?.(`dsh-muse-code: declared the ${PROVIDER} route in Settings > Models`)
         return true
       }
       const profile = isRecord(providers) ? providers[PROVIDER] : undefined
-      if (isRecord(profile) && profile["apiKeyEnv"] === undefined) {
-        // The Models page paints the row's credential dot only for a route that
-        // names a reference; add ours without touching the rest of the profile.
-        await settings.update(
-          SETTINGS_NS,
-          { providers: { [PROVIDER]: { apiKeyEnv: CREDENTIAL_REFERENCE } } },
-          row.revision,
-        )
-        logger?.info?.(`dsh-muse-code: linked the ${PROVIDER} route to ${CREDENTIAL_REFERENCE}`)
-        return true
+      if (isRecord(profile)) {
+        const patch: Record<string, unknown> = {}
+        if (profile["apiKeyEnv"] === undefined) patch["apiKeyEnv"] = CREDENTIAL_REFERENCE
+        if (baseUrl !== undefined && profile["baseURL"] !== baseUrl) patch["baseURL"] = baseUrl
+        if (Object.keys(patch).length > 0) {
+          await settings.update(SETTINGS_NS, { providers: { [PROVIDER]: patch } }, row.revision)
+          logger?.info?.(
+            patch["baseURL"] === undefined
+              ? `dsh-muse-code: linked the ${PROVIDER} route to ${CREDENTIAL_REFERENCE}`
+              : `dsh-muse-code: routed the ${PROVIDER} provider through the local request adapter`,
+          )
+          return true
+        }
       }
       return false
     }

@@ -13,8 +13,11 @@ it declares the route so the provider appears under **Settings → Models** and 
 picker, and it adds the `/muse-login` command that runs the shipped sign-in. No key is copied
 by hand and no provider code is duplicated.
 
-A successful login does not guarantee model access: Meta may reject subscription requests from
-clients other than Muse Code.
+Since 2026-10-29 Meta rejects subscription requests whose client tool declarations collide with
+Muse Code's builtin tool names. The bundle ships a loopback wire adapter that aliases exactly
+those names on the way to `api.meta.ai` and restores them in the answer, so the provider keeps
+working without changing the host's tools. The behavior is pinned in
+[ADAPTER_CONTRACT.md](ADAPTER_CONTRACT.md); Meta's policy still applies.
 
 > **Unofficial and experimental.** This plugin uses a Muse Code subscription credential from
 > DeepSeek Harness. Meta's terms limit that credential to Muse Code, so this use may not be
@@ -97,6 +100,14 @@ cannot reach the Host falls back to that command.
 - Paints the native credential dot on the **Muse Code (Meta subscription)** row: the route names
   `apiKeyEnv: MUSE_CODE_SUB_TOKEN`, and the plugin mirrors the OAuth record's minted key into that
   reference (red without a credential, green with one) and re-mints it before Meta's ~24 h expiry.
+- Routes every inference request through a local wire adapter (`127.0.0.1`, first free port of
+  43219-43222) and writes its `/v1` origin as the route's `baseURL`. The adapter aliases client
+  tool names that collide with Muse Code's builtins (the full pinned set is in
+  [ADAPTER_CONTRACT.md](ADAPTER_CONTRACT.md)), restores
+  them in the response, and normalizes `tool_choice`, reasoning effort, the output-token floor and
+  the encrypted-reasoning include. If Meta still refuses the request, the adapter retries once
+  with every tool aliased. `MUSE_CODE_ADAPTER=off` keeps the proxy but turns the reshaping
+  off.
 - Leaves credential handling to DSH: the shipped flow stores the sign-in as an OAuth credential
   record and the plugin keeps the route's credential-reference copy fresh when the key rotates.
 
@@ -117,6 +128,7 @@ cannot reach the Host falls back to that command.
 | `/muse-login` | The same sign-in from a chat or CLI surface; waits for Meta's confirmation and reports the final state. | available after install |
 | Live model catalog | Chat models the account serves (`GET /v1/models`), written into the declared route when it has no model list of its own. | synced after sign-in |
 | `META_API_KEY` | Optional Meta Model API key that DSH's Meta provider accepts instead of the subscription sign-in. | unset |
+| `MUSE_CODE_ADAPTER` | `off` keeps the local proxy but disables the tool-name reshaping and parameter normalization. | unset |
 | Model | Any model the route serves; availability depends on the subscription plan. | `muse-spark-1.3` |
 
 The route uses `MUSE_CODE_SUB_TOKEN` as a credential reference for the key mirrored from the
@@ -130,6 +142,9 @@ sign-in record.
 - The local `POST /muse-code/login`, `GET /muse-code/login`, and `GET /muse-code/status` routes
   only start the flow and report its state; they transmit no credential and are reachable only
   on the Host's own loopback listener.
+- The wire adapter listens on `127.0.0.1` only. It forwards the `Authorization` header unchanged
+  and never reads, stores or logs credentials, request bodies or response bodies; its optional
+  debug line carries only the method, the path, the status and the number of adapted fields.
 - The stored credential is the `llm-pi-ai/meta` record in the DSH credential store; the
   `MUSE_CODE_SUB_TOKEN` reference the row reads is a copy of its minted key and is refreshed by
   the plugin. Neither ever appears in configuration or logs.
@@ -139,8 +154,9 @@ sign-in record.
   it. Removing the bundle alone stops the route but leaves the record and the declaration in
   place.
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting and
-[AUTH_CONTRACT.md](AUTH_CONTRACT.md) for the pinned login contract that DSH implements.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting,
+[AUTH_CONTRACT.md](AUTH_CONTRACT.md) for the pinned login contract that DSH implements, and
+[ADAPTER_CONTRACT.md](ADAPTER_CONTRACT.md) for the inference wire rules.
 
 ## Prompt caching
 
@@ -221,10 +237,13 @@ sign-in again (Sign in control or `/muse-login`) to sign in and replace the reco
 ### Meta rejects subscription requests from this client
 
 Meta may return a 403 mentioning `client_attestation_denied` or that Muse Code subscriptions cover
-the Muse Code client only. This is a client restriction, not evidence of an expired key. Signing in
-again does not remove the restriction. Use Muse Code for the subscription, or a separate
-pay-as-you-go Meta Model API key for other clients, subject to Meta's terms. Older DSH versions may
-display this refusal as `API key is invalid`.
+the Muse Code client only. With the local adapter running, this should no longer happen for tool
+names that collide with Muse Code's builtins. If it does, one of these is true: the adapter could
+not bind a loopback port (the plugin log names the failure and the route fell back to the direct
+endpoint), `MUSE_CODE_ADAPTER=off` is set, or Meta changed the gate (for example to a real
+per-client signature), which no request shaping can satisfy. Signing in again does not change it.
+The alternatives are Muse Code itself or a pay-as-you-go Meta Model API key, subject to Meta's
+terms. Older DSH versions may display this refusal as `API key is invalid`.
 
 ### The credential dot stays red after signing in
 

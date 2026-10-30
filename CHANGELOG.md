@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-30
+
+### Added
+
+- Local wire adapter in front of `api.meta.ai`: it aliases client tool names that collide with
+  Muse Code builtins, restores them in the response, and normalizes `tool_choice`, reasoning
+  effort, the output-token floor and the encrypted-reasoning include. The `meta` route's
+  `baseURL` points at the adapter, so subscription requests keep working after Meta's
+  2026-10-29 client restriction. The collision set covers the 40 Muse builtin names (goal,
+  cron, session and patch families included), and a refusal not covered by it triggers one retry
+  with every tool aliased.
+- `ADAPTER_CONTRACT.md` pins the wire rules and the measured gate trigger; `ADAPTER_VERSION`
+  is the matching code constant.
+- `MUSE_CODE_ADAPTER=off` disables the reshaping while keeping the loopback proxy.
+
+### Changed
+
+- The Settings > Models route now carries a loopback `baseURL` that is refreshed on every boot,
+  and the catalog sync and sign-in flows are unchanged.
+
 ## [0.2.4] - 2026-10-30
 
 ### Fixed

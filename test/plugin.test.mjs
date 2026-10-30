@@ -42,6 +42,8 @@ const NEUTRAL_NOTICE = {
   url: "https://auth.meta.com/oauth/device/",
   code: "ABCD-EFGH",
 }
+const STUB_ADAPTER = () =>
+  Promise.resolve({ baseUrl: "http://127.0.0.1:43219/v1", close: async () => {} })
 
 function makeSettings(rows) {
   const updates = []
@@ -164,7 +166,7 @@ test("manifest: bundle patch inserts one row and the client half is exported", a
 
 test("plugin registers the command, both routes, the settings write, and credentials", () => {
   const { ctx, commands, children, routes } = makeContext()
-  apply(ctx)
+  apply(ctx, { adapter: STUB_ADAPTER })
   assert.equal(name, "dsh-muse-code")
   assert.deepEqual(inject, ["authorization", "commands"])
   assert.equal(commands.length, 1)
@@ -181,7 +183,7 @@ test("plugin registers the command, both routes, the settings write, and credent
 
 test("a Meta subscription client restriction is not reported as an invalid API key", async () => {
   const { ctx, listeners, listenerOptions } = makeContext()
-  apply(ctx)
+  apply(ctx, { adapter: STUB_ADAPTER })
   const intercept = listeners["llm/stream"]?.[0]
   assert.equal(typeof intercept, "function")
   assert.equal(listenerOptions["llm/stream"]?.[0]?.global, true)
@@ -264,6 +266,76 @@ test("route declaration wires the credential-dot reference", async () => {
   ])
   assert.equal(await ensureMuseRoute(complete.settings, undefined, { attempts: 1 }), false)
   assert.equal(complete.updates.length, 0)
+
+  // A declared route is pointed at the local adapter; only baseURL changes.
+  const adapterBacked = makeSettings([
+    {
+      ns: "llm-pi-ai",
+      revision: 5,
+      value: { providers: { meta: { displayName: "kept", apiKeyEnv: CREDENTIAL_REFERENCE } } },
+    },
+  ])
+  assert.equal(
+    await ensureMuseRoute(adapterBacked.settings, undefined, {
+      attempts: 1,
+      baseUrl: "http://127.0.0.1:43219/v1",
+    }),
+    true,
+  )
+  assert.deepEqual(adapterBacked.updates[0].patch, {
+    providers: { meta: { baseURL: "http://127.0.0.1:43219/v1" } },
+  })
+
+  // A restart on another port moves the route without touching anything else.
+  const moved = makeSettings([
+    {
+      ns: "llm-pi-ai",
+      revision: 6,
+      value: {
+        providers: {
+          meta: {
+            displayName: "kept",
+            apiKeyEnv: CREDENTIAL_REFERENCE,
+            baseURL: "http://127.0.0.1:43219/v1",
+          },
+        },
+      },
+    },
+  ])
+  assert.equal(
+    await ensureMuseRoute(moved.settings, undefined, {
+      attempts: 1,
+      baseUrl: "http://127.0.0.1:43220/v1",
+    }),
+    true,
+  )
+  assert.deepEqual(moved.updates[0].patch, {
+    providers: { meta: { baseURL: "http://127.0.0.1:43220/v1" } },
+  })
+
+  const alreadyRouted = makeSettings([
+    {
+      ns: "llm-pi-ai",
+      revision: 7,
+      value: {
+        providers: {
+          meta: {
+            displayName: "kept",
+            apiKeyEnv: CREDENTIAL_REFERENCE,
+            baseURL: "http://127.0.0.1:43219/v1",
+          },
+        },
+      },
+    },
+  ])
+  assert.equal(
+    await ensureMuseRoute(alreadyRouted.settings, undefined, {
+      attempts: 1,
+      baseUrl: "http://127.0.0.1:43219/v1",
+    }),
+    false,
+  )
+  assert.equal(alreadyRouted.updates.length, 0)
 })
 
 test("seam notices and raw adapter notices both become instructions", () => {
@@ -643,7 +715,7 @@ test("deleting the route in Settings signs out the subscription", async () => {
   // No record: the boot refresh must not reach the network for this test.
   const credentials = makeCredentials(false)
   const context = makeContext({ credentials })
-  apply(context.ctx)
+  apply(context.ctx, { adapter: STUB_ADAPTER })
   await new Promise((resolve) => setTimeout(resolve, 150))
   context.rows.splice(0, context.rows.length, { ns: "llm-pi-ai", revision: 9, value: { providers: {} } })
   for (const listener of context.listeners["settings/document-updated"] ?? []) listener("llm-pi-ai")
@@ -658,7 +730,7 @@ test("a settings update without a previously declared route does not sign out", 
     credentials,
     settingsRows: [{ ns: "llm-pi-ai", revision: 1, value: { providers: {} } }],
   })
-  apply(context.ctx)
+  apply(context.ctx, { adapter: STUB_ADAPTER })
   await new Promise((resolve) => setTimeout(resolve, 150))
   for (const listener of context.listeners["settings/document-updated"] ?? []) listener("llm-pi-ai")
   await new Promise((resolve) => setTimeout(resolve, 600))

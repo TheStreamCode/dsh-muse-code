@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "dsh-muse-code"
-version: 0.2.3
-date-released: "2026-10-26"
+version: 0.3.0
+date-released: "2026-10-30"
 url: "https://github.com/TheStreamCode/dsh-muse-code"
 repository-code: "https://github.com/TheStreamCode/dsh-muse-code"
 license: MIT
