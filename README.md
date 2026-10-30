@@ -13,6 +13,9 @@ it declares the route so the provider appears under **Settings → Models** and 
 picker, and it adds the `/muse-login` command that runs the shipped sign-in. No key is copied
 by hand and no provider code is duplicated.
 
+A successful login does not guarantee model access: Meta may reject subscription requests from
+clients other than Muse Code.
+
 > **Unofficial and experimental.** This plugin uses a Muse Code subscription credential from
 > DeepSeek Harness. Meta's terms limit that credential to Muse Code, so this use may not be
 > supported and Meta may suspend or revoke accounts or credentials. Use it at your own risk;
@@ -56,7 +59,8 @@ bundle.
    reach the Host), run `/muse-login` in a chat instead.
 4. Confirm the code on Meta's page and approve. DSH stores the credential and keeps it fresh;
    `/muse-login` answers with the final state ("Muse Code is signed in") once Meta confirms.
-5. Pick a Muse model in the model picker, for example `Muse Spark 1.3`.
+5. Pick a Muse model in the model picker, for example `Muse Spark 1.3`. Meta's subscription
+   restrictions still apply to requests from DSH.
 
 The credential lives in the DSH credential store as the `llm-pi-ai/meta` record. It is never
 written to `cordis.patch.yml`, which carries only the route's display name and its model list.
@@ -94,8 +98,7 @@ cannot reach the Host falls back to that command.
   `apiKeyEnv: MUSE_CODE_SUB_TOKEN`, and the plugin mirrors the OAuth record's minted key into that
   reference (red without a credential, green with one) and re-mints it before Meta's ~24 h expiry.
 - Leaves credential handling to DSH: the shipped flow stores the sign-in as an OAuth credential
-  record and the plugin keeps the route's credential-reference copy fresh, so the route keeps
-  working after the key rotates.
+  record and the plugin keeps the route's credential-reference copy fresh when the key rotates.
 
 ## Requirements
 
@@ -116,16 +119,14 @@ cannot reach the Host falls back to that command.
 | `META_API_KEY` | Optional Meta Model API key that DSH's Meta provider accepts instead of the subscription sign-in. | unset |
 | Model | Any model the route serves; availability depends on the subscription plan. | `muse-spark-1.3` |
 
-The `MUSE_CODE_SUB_TOKEN` reference from the 0.1.x releases is no longer used by this bundle;
-see the upgrade note under Troubleshooting.
+The route uses `MUSE_CODE_SUB_TOKEN` as a credential reference for the key mirrored from the
+sign-in record.
 
 ## Privacy and security
 
-- The bundle talks to one endpoint: `GET https://api.meta.ai/v1/models`, authenticated with the
-  stored subscription key, to sync the account's chat catalog into the route. It stores no
-  secret, and the sign-in, the credential record, and the inference requests belong to DSH:
-  requests go to `https://api.meta.ai/v1`, and the verification page is opened on
-  `https://auth.meta.com`.
+- The bundle calls `GET https://api.meta.ai/v1/models` to sync the account's chat catalog and
+  `https://api.meta.ai/muse-code/key` to refresh the inference key. DSH owns the sign-in and
+  credential store; the verification page is opened on `https://auth.meta.com`.
 - The local `POST /muse-code/login`, `GET /muse-code/login`, and `GET /muse-code/status` routes
   only start the flow and report its state; they transmit no credential and are reachable only
   on the Host's own loopback listener.
@@ -217,6 +218,14 @@ before it expires.
 DSH re-mints the inference key from the stored session. When Meta ends that session, run the
 sign-in again (Sign in control or `/muse-login`) to sign in and replace the record.
 
+### Meta rejects subscription requests from this client
+
+Meta may return a 403 mentioning `client_attestation_denied` or that Muse Code subscriptions cover
+the Muse Code client only. This is a client restriction, not evidence of an expired key. Signing in
+again does not remove the restriction. Use Muse Code for the subscription, or a separate
+pay-as-you-go Meta Model API key for other clients, subject to Meta's terms. Older DSH versions may
+display this refusal as `API key is invalid`.
+
 ### The credential dot stays red after signing in
 
 The route's credential reference is a copy of the record's minted key; the plugin mirrors it on
@@ -253,9 +262,8 @@ dsh plugin --profile desktop remove @thestreamcode/dsh-muse-code
 0.1.x inserted a second `@deepseek-ai/dsh-llm-pi-ai` instance, which DSH refuses to activate
 (each instance declares the whole provider catalog), so its route never appeared and its
 device-code flow had no surface. Reinstall the bundle and restart DSH: the new version declares
-the shipped `meta` route instead. The stale `MUSE_CODE_SUB_TOKEN` credential and its
-`dsh-muse-code/subscription` record can be deleted from the DSH credential store; nothing reads
-them any more.
+the shipped `meta` route instead. The old `dsh-muse-code/subscription` record is no longer used.
+The route still uses `MUSE_CODE_SUB_TOKEN`, which the plugin mirrors from the current sign-in.
 
 ## Development
 

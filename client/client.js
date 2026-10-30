@@ -229,7 +229,7 @@ loader?.load({
       const busy = state.phase === "starting" || state.phase === "pending"
       const description =
         state.phase === "authorized"
-          ? "Muse Code models are available in the model picker."
+          ? "Signed in to Meta. Model access depends on Meta's subscription policy."
           : "Sign in once with the Meta account that holds the Muse Code subscription."
       const messageColor =
         state.phase === "failed"

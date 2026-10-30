@@ -25,6 +25,19 @@ type CommandResult = {
     kind: "error";
     text: string;
 };
+type ModelStreamChunk = {
+    type: string;
+    reason?: {
+        kind: string;
+        failure?: {
+            code: string;
+            message: string;
+            [key: string]: unknown;
+        };
+        [key: string]: unknown;
+    };
+    [key: string]: unknown;
+};
 type AuthorizationMethods = Array<{
     id: string;
     label: string;
@@ -121,7 +134,9 @@ type HostContext = {
     logger?: Logger;
     effect(callback: () => () => void, label?: string): () => void;
     inject?(dependencies: string[], callback: (child: ChildContext) => void): void;
-    on?(event: string, listener: (...args: never[]) => void): () => void;
+    on?(event: string, listener: (...args: never[]) => void, options?: {
+        global?: boolean;
+    }): () => void;
 };
 /** One sign-in lifecycle fact the surfaces can read. */
 export type SignInSnapshot = {
@@ -178,6 +193,8 @@ type SignInOutcome = {
  * @param ctx - Host plugin context.
  */
 export declare function apply(ctx: HostContext): void;
+/** Preserve Meta's specific subscription refusal instead of classifying it as an invalid key. */
+export declare function explainClientRestriction(provider: string, chunks: AsyncIterable<ModelStreamChunk>): AsyncGenerator<ModelStreamChunk>;
 /** Command definition for the sign-in; exported for tests. */
 export declare function museLoginCommand(ctx: HostContext, options?: SignInOptions): Parameters<CommandFace["register"]>[0];
 /**

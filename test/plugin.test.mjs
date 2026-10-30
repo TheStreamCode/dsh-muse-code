@@ -89,6 +89,7 @@ function makeContext(options = {}) {
   const routes = []
   const cancels = []
   const listeners = {}
+  const listenerOptions = {}
   const { settings, updates } = makeSettings(rows)
   const ctx = {
     credentials,
@@ -120,12 +121,13 @@ function makeContext(options = {}) {
       callback({ ...ctx, settings, credentials, webServer: { register(route) { routes.push(route); return () => {} } } })
       return () => {}
     },
-    on(event, listener) {
+    on(event, listener, options) {
       ;(listeners[event] ??= []).push(listener)
+      ;(listenerOptions[event] ??= []).push(options)
       return () => {}
     },
   }
-  return { ctx, commands, children, routes, cancels, updates, settings, credentials, rows, listeners }
+  return { ctx, commands, children, routes, cancels, updates, settings, credentials, rows, listeners, listenerOptions }
 }
 
 function makeResponse() {
@@ -175,6 +177,66 @@ test("plugin registers the command, both routes, the settings write, and credent
       ["exact", STATUS_ROUTE],
     ],
   )
+})
+
+test("a Meta subscription client restriction is not reported as an invalid API key", async () => {
+  const { ctx, listeners, listenerOptions } = makeContext()
+  apply(ctx)
+  const intercept = listeners["llm/stream"]?.[0]
+  assert.equal(typeof intercept, "function")
+  assert.equal(listenerOptions["llm/stream"]?.[0]?.global, true)
+
+  const failure = {
+    type: "finish",
+    reason: {
+      kind: "error",
+      failure: {
+        code: "AUTH",
+        message: "HTTP 403: This API key is billed to a Muse Code subscription. Muse Code subscriptions cover requests from the Muse Code client only.",
+      },
+    },
+  }
+  async function* stream() { yield failure }
+  const chunks = []
+  for await (const chunk of intercept({ provider: "meta" }, stream)) chunks.push(chunk)
+  assert.equal(chunks[0].reason.failure.code, "MUSE_CODE_CLIENT_RESTRICTED")
+  assert.match(chunks[0].reason.failure.message, /Muse Code client/i)
+
+  const untouched = []
+  for await (const chunk of intercept({ provider: "another-provider" }, stream)) untouched.push(chunk)
+  assert.deepEqual(untouched, [failure])
+
+  const ordinaryAuthFailure = {
+    type: "finish",
+    reason: { kind: "error", failure: { code: "AUTH", message: "HTTP 401: invalid credential" } },
+  }
+  async function* ordinaryStream() { yield ordinaryAuthFailure }
+  const ordinary = []
+  for await (const chunk of intercept({ provider: "meta" }, ordinaryStream)) ordinary.push(chunk)
+  assert.deepEqual(ordinary, [ordinaryAuthFailure])
+
+  const attestation = {
+    type: "finish",
+    reason: { kind: "error", failure: { code: "AUTH", message: "403 client_attestation_denied", status: 403 } },
+  }
+  const delta = { type: "text-delta", index: 0, text: "partial" }
+  async function* attestationStream() { yield delta; yield attestation }
+  const transformed = []
+  for await (const chunk of intercept({ provider: "meta" }, attestationStream)) transformed.push(chunk)
+  assert.deepEqual(transformed[0], delta)
+  assert.equal(transformed[1].reason.failure.status, 403)
+  assert.equal(transformed[1].reason.failure.code, "MUSE_CODE_CLIENT_RESTRICTED")
+  assert.equal(attestation.reason.failure.code, "AUTH")
+})
+
+test("the Muse login never falls back to an API-key prompt", async () => {
+  const { ctx } = makeContext({ flow: { ...FLOW, methods: [{ id: "api-key", label: "API key" }] } })
+  let started = false
+  ctx.authorization.begin = async () => { started = true; return { status: "authorized" } }
+  const result = await museLoginCommand(ctx).handler({})
+  assert.equal(started, false)
+  assert.equal(result.kind, "error")
+  assert.match(result.text, /browser|oauth/i)
 })
 
 test("route declaration wires the credential-dot reference", async () => {
@@ -312,6 +374,9 @@ test("the login route answers a plain navigation with a polling page", async () 
   assert.match(state.headers["content-type"] ?? "", /text\/html/)
   assert.match(state.body, /ABCD-EFGH/)
   assert.match(state.body, new RegExp(STATUS_ROUTE))
+  const script = state.body.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+  assert.ok(script)
+  assert.doesNotThrow(() => new Function(script))
 })
 
 test("the login route reports a busy flow and times out with a cancel", async () => {
@@ -599,5 +664,3 @@ test("a settings update without a previously declared route does not sign out", 
   await new Promise((resolve) => setTimeout(resolve, 600))
   assert.deepEqual(credentials.calls.deleted, [])
 })
-
-

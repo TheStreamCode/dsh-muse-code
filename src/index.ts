@@ -91,6 +91,16 @@ type Logger = {
 
 type CommandResult = { kind: "success"; text?: string } | { kind: "error"; text: string }
 
+type ModelStreamChunk = {
+  type: string
+  reason?: {
+    kind: string
+    failure?: { code: string; message: string; [key: string]: unknown }
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
 type AuthorizationMethods = Array<{ id: string; label: string }>
 
 type AuthorizationEntry = {
@@ -191,7 +201,7 @@ type HostContext = {
   logger?: Logger
   effect(callback: () => () => void, label?: string): () => void
   inject?(dependencies: string[], callback: (child: ChildContext) => void): void
-  on?(event: string, listener: (...args: never[]) => void): () => void
+  on?(event: string, listener: (...args: never[]) => void, options?: { global?: boolean }): () => void
 }
 
 /** One sign-in lifecycle fact the surfaces can read. */
@@ -258,6 +268,10 @@ export function apply(ctx: HostContext): void {
   const options: SignInOptions = { state, credentials: () => credentialsFace }
 
   ctx.effect(() => ctx.commands.register(museLoginCommand(ctx, options)), "dsh-muse-code: /muse-login")
+  ctx.on?.("llm/stream", (request: { provider: string }, next: () => AsyncIterable<ModelStreamChunk>) =>
+    explainClientRestriction(request.provider, next()),
+    { global: true },
+  )
   if (typeof ctx.inject !== "function") return
 
   ctx.inject(["credentials"], (child) => {
@@ -365,6 +379,36 @@ export function apply(ctx: HostContext): void {
   })
 }
 
+/** Preserve Meta's specific subscription refusal instead of classifying it as an invalid key. */
+export async function* explainClientRestriction(
+  provider: string,
+  chunks: AsyncIterable<ModelStreamChunk>,
+): AsyncGenerator<ModelStreamChunk> {
+  for await (const chunk of chunks) {
+    const failure = chunk.type === "finish" && chunk.reason?.kind === "error"
+      ? chunk.reason.failure
+      : undefined
+    if (provider === PROVIDER && failure !== undefined && (
+      /client_attestation_denied/i.test(`${failure.code} ${failure.message}`) ||
+      /muse code subscriptions cover requests from the muse code client only/i.test(failure.message)
+    )) {
+      yield {
+        ...chunk,
+        reason: {
+          ...chunk.reason!,
+          failure: {
+            ...failure,
+            code: "MUSE_CODE_CLIENT_RESTRICTED",
+            message: "Meta rejected this request because Muse Code subscriptions cover the Muse Code client only. Signing in again will not change this restriction.",
+          },
+        },
+      }
+    } else {
+      yield chunk
+    }
+  }
+}
+
 /** Command definition for the sign-in; exported for tests. */
 export function museLoginCommand(
   ctx: HostContext,
@@ -391,7 +435,7 @@ export function museLoginCommand(
         return { kind: "success", text: `${started.text} Still waiting for Meta: the sign-in completes when you approve the page.` }
       }
       if (result.status === "authorized") {
-        return { kind: "success", text: "Muse Code is signed in. Its models are available in the model picker." }
+        return { kind: "success", text: "Muse Code is signed in. Model access depends on Meta's subscription policy." }
       }
       return {
         kind: "error",
@@ -526,9 +570,9 @@ export async function startSignIn(ctx: HostContext, options: SignInOptions = {})
   if (entry.inFlight) {
     return fail("busy", "A Muse Code sign-in is already running. Approve it in the browser, then retry.")
   }
-  const method = entry.methods.find((candidate) => candidate.id === AUTH_METHOD)?.id ?? entry.methods[0]?.id
+  const method = entry.methods.find((candidate) => candidate.id === AUTH_METHOD)?.id
   if (method === undefined) {
-    return fail("unavailable", `The Muse Code sign-in flow offers no method to run (${AUTH_KEY}).`)
+    return fail("unavailable", `The Muse Code sign-in flow offers no browser OAuth method (${AUTH_KEY}).`)
   }
 
   const openBrowser = options.openBrowser ?? openExternal
@@ -1116,7 +1160,7 @@ export function signInPage(outcome: SignInOutcome): string {
     `function poll(){if(tries++>150){el.textContent='Still waiting. You can close this page and retry from Settings > Models.';return}` +
     `fetch('${STATUS_ROUTE}',{headers:{accept:'application/json'}}).then(function(r){return r.json()})` +
     `.then(function(s){if(!s){setTimeout(poll,2000);return}` +
-    `if(s.state==='authorized'){document.body.innerHTML='<h1 style="font-size:1.15rem">Muse Code</h1><p>Signed in. Muse Code models are available in DeepSeek Harness.</p>';return}` +
+    `if(s.state==='authorized'){document.body.innerHTML='<h1 style="font-size:1.15rem">Muse Code</h1><p>Signed in. Model access depends on the Meta subscription policy.</p>';return}` +
     `if(s.state==='failed'||s.state==='cancelled'){document.body.innerHTML='<h1 style="font-size:1.15rem">Muse Code</h1><p>'+String(s.text||'Sign-in did not complete.').replace(/[<>&]/g,'')+'</p>';return}` +
     `el.textContent='Waiting for Meta to confirm…';setTimeout(poll,2000)})` +
     `.catch(function(){setTimeout(poll,3000)})}poll()})()</script>` +
