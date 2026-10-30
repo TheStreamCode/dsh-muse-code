@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-10-30
+
+### Fixed
+
+- Meta's client restriction is reported as a policy refusal instead of `API key is invalid`;
+  signing in again does not remove it.
+
+### Changed
+
+- The sign-in requires the browser OAuth method and never falls back to an API-key prompt.
+- The sign-in card, command, and page copy state that model access depends on Meta's subscription
+  policy.
+
 ## [0.2.3] - 2026-10-26
 
 ### Added
