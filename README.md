@@ -1,6 +1,6 @@
 # dsh-muse-code
 
-Muse Code (Meta subscription) integration for DeepSeek Harness
+Muse Code subscription integration for DeepSeek Harness
 
 [![CI](https://github.com/TheStreamCode/dsh-muse-code/actions/workflows/ci.yml/badge.svg)](https://github.com/TheStreamCode/dsh-muse-code/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -10,8 +10,8 @@ DeepSeek Harness (DSH) ships Meta's Muse Code subscription as the pi-ai `meta`
 provider with its device-code sign-in flow. This bundle connects that
 provider to the surfaces you work in: it declares the route so the provider
 appears under **Settings → Models** and in the model picker, and it adds the
-`/muse-login` command that runs the shipped sign-in. No hand-copied key, no
-duplicated provider code.
+**Muse Code OAuth** settings page and the `/muse-login` command that run the
+shipped sign-in. No hand-copied key, no duplicated provider code.
 
 Since 2026-10-29 Meta rejects subscription requests whose client tool
 declarations collide with Muse Code's builtin tool names, so the bundle ships
@@ -50,25 +50,28 @@ No manual profile edit is required. Restart DSH after installing or upgrading.
 ## Quick start
 
 1. Install the bundle and restart DSH.
-2. On the **Muse Code (Meta subscription)** card under **Settings → Models**,
-   press **Sign in**. The Host runs DSH's device-code flow, opens the
-   verification page, and shows the code.
-3. Confirm the code on Meta's page; the card switches to **Signed in** and DSH
+2. Open **Settings → Muse Code OAuth** and press **Sign in with Meta**. The
+   Host runs DSH's device-code flow, opens the verification page, and shows the
+   code.
+3. Confirm the code on Meta's page; the page switches to **Signed in** and DSH
    stores the credential.
 4. Pick a Muse model in the model picker, for example `muse-spark-1.3`.
 
-Without a page that can reach the Host, run `/muse-login` in a chat instead; it
-runs the same flow ([how the sign-in fits together](docs/sign-in.md)).
+If the Settings page cannot reach the Host, run `/muse-login` in a chat instead;
+it runs the same flow ([how the sign-in fits together](docs/sign-in.md)). The
+page states, actions, and provider-row migration are documented in
+[docs/settings-page.md](docs/settings-page.md).
 
 ## Features
 
-- Declares the shipped `meta` provider route as **Muse Code (Meta
-  subscription)** for Settings → Models and the model picker.
+- Declares the shipped `meta` provider route as `muse-code-oauth` for
+  Settings → Models and the model picker.
 - Syncs the account's live chat catalog into the route, so new chat models
   appear without a DSH catalog update. A model list you edited is never
   overwritten.
-- Adds a **Sign in** card with live status, device code, and page link, plus
-  the `/muse-login` chat command. Both start DSH's device-code flow.
+- Adds a **Muse Code OAuth** settings page with live status, device code, and
+  Meta page link, plus the `/muse-login` chat command. Both start DSH's
+  device-code flow.
 - Paints the native credential dot on the provider row and re-mints the key
   before Meta's ~24 h expiry.
 - Routes inference through a loopback adapter that aliases colliding tool
@@ -88,8 +91,8 @@ runs the same flow ([how the sign-in fits together](docs/sign-in.md)).
 
 | Setting | Purpose | Default |
 | --- | --- | --- |
-| `meta` provider route | Declared by the bundle; shown under Settings → Models and in the model picker. | declared on first boot |
-| **Sign in** card | Starts the device-code flow and follows the status until **Signed in**. | available after install |
+| `muse-code-oauth` provider route | The shipped `meta` route, declared by the bundle; shown under Settings → Models and in the model picker. | declared on first boot |
+| **Muse Code OAuth** page | Starts the device-code flow and follows the status until **Signed in**. | available after install |
 | `/muse-login` | The same sign-in from a chat or CLI surface. | available after install |
 | Live model catalog | Account chat models, written into the route when it has no list. | synced after sign-in |
 | `META_API_KEY` | Optional pay-as-you-go key accepted instead of the sign-in. | unset |
@@ -98,6 +101,10 @@ runs the same flow ([how the sign-in fits together](docs/sign-in.md)).
 
 The route reads the mirrored key through `MUSE_CODE_SUB_TOKEN`. Caching behaves
 like any other pi-ai route ([measured behavior](docs/prompt-caching.md)).
+
+Installs upgraded from 0.3.x stored **Muse Code (Meta subscription)** as the
+route label. 0.4.0 renames that legacy label to `muse-code-oauth` on the next
+boot and keeps a display name edited by hand.
 
 ## Privacy and security
 
@@ -116,7 +123,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting,
 
 ## Troubleshooting
 
-### Nothing named Muse Code appears under Settings → Models
+### The `muse-code-oauth` row is missing from Settings → Models
 
 The bundle was not loaded by the active profile, or the profile lacks the
 `llm-pi-ai` adapter. Re-run the install command for the same profile, restart
@@ -126,9 +133,10 @@ provider, update DSH.
 ### The sign-in page cannot reach the Host
 
 Some Desktop and non-loopback deployments cannot reach the local Web route, and
-the Host opens the browser on a best-effort basis. Open the sign-in page from
-the shown link, enter the code, and if the card never flips to **Signed in**,
-run `/muse-login` in a chat instead; it waits for Meta's confirmation itself.
+the Host opens the browser on a best-effort basis. Open the Meta page from the
+shown link, enter the code, and if the Muse Code OAuth page never flips to
+**Signed in**, run `/muse-login` in a chat instead; it waits for Meta's
+confirmation itself.
 
 ### Meta rejects subscription requests from this client
 
@@ -147,7 +155,7 @@ plugin was disabled, sign in again to replace the record.
 
 The live sync only fills a route that has no model list of its own. If you
 edited the provider's models, remove that list and restart DSH so the sync can
-refill it. Sign in first if the card is not **Signed in**.
+refill it. Sign in first if the Muse Code OAuth page is not **Signed in**.
 
 More failures: [docs/troubleshooting.md](docs/troubleshooting.md).
 

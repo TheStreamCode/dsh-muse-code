@@ -1,6 +1,6 @@
 {
   "name": "@thestreamcode/dsh-muse-code",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Unofficial DeepSeek Harness integration for Meta's Muse Code subscription: declares the shipped Meta provider route and adds its sign-in command. Use at your own risk.",
   "license": "MIT",
   "author": {
@@ -39,7 +39,7 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-settings-models"
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },

@@ -84,7 +84,7 @@ function makeContext(options = {}) {
   const flow = "flow" in options ? options.flow : FLOW
   const credentials = options.credentials ?? makeCredentials(false)
   const rows = options.settingsRows ?? [
-    { ns: "llm-pi-ai", revision: 3, value: { providers: { meta: { displayName: "Muse Code (Meta subscription)" } } } },
+    { ns: "llm-pi-ai", revision: 3, value: { providers: { meta: { displayName: "muse-code-oauth" } } } },
   ]
   const commands = []
   const children = []
@@ -153,6 +153,11 @@ test("manifest: bundle patch inserts one row and the client half is exported", a
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   assert.deepEqual(manifest.dsh.bundle, { patch: "./cordis.patch.yml" })
   assert.equal(manifest.dsh.client.platform, "web")
+  assert.deepEqual(manifest.dsh.client.inject, ["@deepseek-ai/dsh-client-ui-settings"])
+  assert.equal(
+    manifest.dsh.client.inject.includes("@deepseek-ai/dsh-client-ui-settings-models"),
+    false,
+  )
   assert.equal(manifest.exports["./client"], "./client/client.js")
   assert.ok(manifest.files.includes("client/client.js"))
   assert.ok(manifest.files.includes("locale/*.json"))
@@ -247,7 +252,7 @@ test("route declaration wires the credential-dot reference", async () => {
   assert.equal(absent.updates.length, 1)
   assert.deepEqual(absent.updates[0].patch, {
     providers: {
-      meta: { displayName: "Muse Code (Meta subscription)", apiKeyEnv: CREDENTIAL_REFERENCE },
+      meta: { displayName: "muse-code-oauth", apiKeyEnv: CREDENTIAL_REFERENCE },
     },
   })
 
@@ -256,6 +261,35 @@ test("route declaration wires the credential-dot reference", async () => {
   ])
   assert.equal(await ensureMuseRoute(declared.settings, undefined, { attempts: 1 }), true)
   assert.deepEqual(declared.updates[0].patch, { providers: { meta: { apiKeyEnv: CREDENTIAL_REFERENCE } } })
+
+  // Routes declared by an older build carry the legacy label; the next refresh
+  // migrates it to the current name.
+  const legacy = makeSettings([
+    {
+      ns: "llm-pi-ai",
+      revision: 4,
+      value: {
+        providers: {
+          meta: { displayName: "Muse Code (Meta subscription)", apiKeyEnv: CREDENTIAL_REFERENCE },
+        },
+      },
+    },
+  ])
+  assert.equal(await ensureMuseRoute(legacy.settings, undefined, { attempts: 1 }), true)
+  assert.deepEqual(legacy.updates[0].patch, {
+    providers: { meta: { displayName: "muse-code-oauth" } },
+  })
+
+  // A display name the user chose is never rewritten.
+  const customName = makeSettings([
+    {
+      ns: "llm-pi-ai",
+      revision: 4,
+      value: { providers: { meta: { displayName: "My Muse", apiKeyEnv: CREDENTIAL_REFERENCE } } },
+    },
+  ])
+  assert.equal(await ensureMuseRoute(customName.settings, undefined, { attempts: 1 }), false)
+  assert.equal(customName.updates.length, 0)
 
   const complete = makeSettings([
     {
@@ -540,7 +574,7 @@ test("the model sync writes the live chat catalog into the declared route", asyn
     profile.models.map((model) => model.id),
     ["muse-spark-1.3", "muse-wonder-1.0"],
   )
-  assert.equal(profile.displayName, "Muse Code (Meta subscription)")
+  assert.equal(profile.displayName, "muse-code-oauth")
 })
 
 test("the model sync leaves an existing models list alone and skips without a key", async () => {

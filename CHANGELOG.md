@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-01
+
+### Added
+
+- A **Muse Code OAuth** settings section (id `muse-code-oauth`, order 53) built on the shared
+  DSH settings-page design. It shows the live status, the device code, the Meta page link, and a
+  `/muse-login` fallback, and keeps the same `POST /muse-code/login`, `GET /muse-code/status`,
+  and command behavior.
+- `docs/settings-page.md` documents the page states and actions, the provider-row migration, and
+  the Host-reachability fallback.
+
+### Changed
+
+- The Settings > Models provider row is labeled `muse-code-oauth` instead of **Muse Code
+  (Meta subscription)**. The shipped `meta` route, its models, and its credentials are
+  unchanged. Installs that already declared the route keep the stored label, so the next
+  provider refresh rewrites the old **Muse Code (Meta subscription)** display name to
+  `muse-code-oauth`; a custom display name set through **Edit** is preserved.
+- The Client half now injects `@deepseek-ai/dsh-client-ui-settings` instead of the Models
+  settings package, because the sign-in surface is a `settings.section`.
+- The plugin listing description and the README quick start, features, configuration, and
+  troubleshooting now describe the settings page.
+
+### Removed
+
+- The inline sign-in card under Settings > Models.
+
 ## [0.3.0] - 2026-10-30
 
 ### Added

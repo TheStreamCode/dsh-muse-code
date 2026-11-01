@@ -10,7 +10,7 @@ export declare const inject: string[];
  * and the plugin keeps it in step with the OAuth record.
  */
 export declare const CREDENTIAL_REFERENCE = "MUSE_CODE_SUB_TOKEN";
-/** Web route the Settings control calls to start the sign-in. */
+/** Web route the Muse Code OAuth settings page calls to start the sign-in. */
 export declare const LOGIN_ROUTE = "/muse-code/login";
 /** Web route that reports whether the sign-in completed. */
 export declare const STATUS_ROUTE = "/muse-code/status";
@@ -191,7 +191,7 @@ type SignInOutcome = {
     text: string;
 };
 /**
- * Register the sign-in command, the Settings > Models routes, the live catalog
+ * Register the sign-in command, the settings-page routes, the live catalog
  * sync, and the settings write that makes the Muse Code provider visible.
  * @param ctx - Host plugin context.
  * @param overrides - Test seam: replace the local request adapter.
@@ -205,7 +205,7 @@ export declare function explainClientRestriction(provider: string, chunks: Async
 export declare function museLoginCommand(ctx: HostContext, options?: SignInOptions): Parameters<CommandFace["register"]>[0];
 /**
  * Build the exact Web route that starts the same sign-in from the Settings
- * page. POST answers JSON for the Settings control; GET answers a small page
+ * page. POST answers JSON for the settings page; GET answers a small page
  * that shows the code and polls the status route until Meta confirms.
  * @param ctx - Host plugin context.
  * @param options - injected side effects, overridable in tests.
@@ -261,8 +261,8 @@ export declare function formatSignInText(instruction: SignInInstruction, opened:
  * The write is a merge into the entry's editable config, exactly what the
  * Models page does when a user adds this provider by hand; an already declared
  * `meta` profile is never rewritten beyond the fields this bundle owns: the
- * credential reference and, when the local adapter is running, its loopback
- * `baseURL`.
+ * credential reference, the legacy display name, and, when the local adapter is
+ * running, its loopback `baseURL`.
  *
  * @param settings - the Settings form service.
  * @param logger - optional plugin logger.

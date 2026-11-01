@@ -1,16 +1,16 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "dsh-muse-code"
-version: 0.3.0
-date-released: "2026-10-30"
+version: 0.4.0
+date-released: "2026-11-01"
 url: "https://github.com/TheStreamCode/dsh-muse-code"
 repository-code: "https://github.com/TheStreamCode/dsh-muse-code"
 license: MIT
 abstract: >-
   Unofficial DeepSeek Harness bundle that integrates Meta Muse Code models through
   the subscription: it declares the shipped Meta provider route for Settings > Models
-  and the model picker, and adds the /muse-login command for the built-in device-code
-  sign-in.
+  and the model picker, adds the Muse Code OAuth settings page, and adds the
+  /muse-login command for the built-in device-code sign-in.
 keywords:
   - deepseek-harness
   - dsh-plugin

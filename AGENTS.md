@@ -11,7 +11,7 @@ sibling Muse plugins (`hermes-muse-code`, `openclaw-muse-code`, `opencode-muse-a
 ## Layout
 
 - `src/` — bundle source: route declaration in the `llm-pi-ai` settings section, the
-  `/muse-login` command, and the Client half's Settings → Models hint.
+  `/muse-login` command, and the Client half's Muse Code OAuth settings section.
 - `lib/` — compiled output, committed because DSH bundle installs from Git may not run a build.
   Regenerate with `npm run build`; never edit by hand.
 - `test/` — `node:test` suite; new behavior needs a test.

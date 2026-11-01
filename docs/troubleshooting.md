@@ -16,17 +16,26 @@ This DSH build does not ship the Meta provider. Update to DeepSeek Harness
 ## Meta denies the login, or the subscription is inactive
 
 The account has no active Muse Code subscription, the code expired, or the
-approval was declined. Start the sign-in again (Sign in control or
-`/muse-login`) and approve the new code before it expires.
+approval was declined. Start the sign-in again (**Sign in with Meta** on the
+Muse Code OAuth page, or `/muse-login`) and approve the new code before it
+expires.
 
 ## The credential dot stays red after signing in
 
 The route's credential reference is a copy of the record's minted key; the
 plugin mirrors it on boot and on every record update. If the dot stays red
-while the card says **Signed in**, restart DSH and check that the
-`llm-pi-ai/meta` record still exists in the credential store.
+while the Muse Code OAuth page says **Signed in**, restart DSH and check that
+the `llm-pi-ai/meta` record still exists in the credential store.
 
-## Edit and Delete on the Muse Code row
+## The Models row still shows the old Muse Code name
+
+0.3.x stored **Muse Code (Meta subscription)** as the route label. 0.4.0
+renames that legacy label to `muse-code-oauth` on the next boot. If the row
+still shows the old name, restart DSH and check that the route under
+**Settings → Models** was not renamed by hand: a custom display name is kept on
+purpose.
+
+## Edit and Delete on the `muse-code-oauth` row
 
 Both are DSH's generic provider-row actions and a plugin cannot hide them.
 
