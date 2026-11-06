@@ -1,4 +1,4 @@
-# dsh-muse-code
+# Muse Code for DeepSeek Harness
 
 Muse Code subscription integration for DeepSeek Harness
 
@@ -198,5 +198,4 @@ MIT — see [`LICENSE`](LICENSE). The software is provided "as is"; see
 ---
 
 Maintained by [Michael Gasperini (Mikesoft)](https://mikesoft.it).
-If it is useful to you, consider
-[sponsoring its maintenance](https://github.com/sponsors/TheStreamCode).
+If this project is useful to you, consider [sponsoring its maintenance](https://github.com/sponsors/TheStreamCode).
